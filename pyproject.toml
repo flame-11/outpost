@@ -3,6 +3,8 @@ name = "outpost"
 version = "0.1.0"
 description = "A public callback catcher: authoritative name server and web listener for one zone, with sealed records and a pull API."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "dnspython>=2.6",

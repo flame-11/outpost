@@ -109,3 +109,7 @@ Errors have the shape `{"error": {"code", "message"}}`. The codes are `unauthori
 `sealed` is a libsodium sealed box over the record JSON. A record is deleted
 `OUTPOST_RETENTION_DAYS` after it arrives. A channel is deleted when its last authenticated
 call and its newest record are both older than that.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
