@@ -61,5 +61,24 @@ class HttpRecord(StrictModel):
     truncated: bool
 
 
-OpenedRecord = Annotated[DnsRecord | HttpRecord, Field(discriminator="protocol")]
-OPENED_RECORD: TypeAdapter[DnsRecord | HttpRecord] = TypeAdapter(OpenedRecord)
+class SmtpRecord(StrictModel):
+    """One accepted recipient of one message received in `DATA`."""
+
+    v: Literal[1]
+    protocol: Literal["smtp"]
+    channel_id: ChannelId
+    token: Token
+    prefix: str
+    name: str
+    source_ip: str
+    source_port: Port
+    received_at: Timestamp
+    helo: str
+    mail_from: str
+    rcpt_to: str
+    tls: bool
+    raw_b64: str
+
+
+OpenedRecord = Annotated[DnsRecord | HttpRecord | SmtpRecord, Field(discriminator="protocol")]
+OPENED_RECORD: TypeAdapter[DnsRecord | HttpRecord | SmtpRecord] = TypeAdapter(OpenedRecord)
