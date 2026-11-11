@@ -2,7 +2,7 @@
 # the host's own address. Values come from a `.env` file next to this one (ignored by git):
 #   required: OUTPOST_ZONE, OUTPOST_PUBLIC_IPV4, OUTPOST_BIND_IP
 #   OUTPOST_API_KEY_SHA256 (the bootstrap key `default`; optional once `outpost-admin key add` made a key)
-#   OUTPOST_TLS=acme|files|off, OUTPOST_ACME_EMAIL, OUTPOST_ACME_STAGING=true|false, OUTPOST_SMTP=on|off,
+#   OUTPOST_TLS=acme|files|off, OUTPOST_ACME_EMAIL, OUTPOST_ACME_STAGING=true|false, OUTPOST_SMTP=on|off, OUTPOST_RESPONSES=on|off,
 #   OUTPOST_PUBLIC_IPV6, OUTPOST_API_PORT, OUTPOST_RETENTION_DAYS and the four limits.
 # OUTPOST_BIND_IP is the host's own interface address; the provider's firewall opens 53/udp, 53/tcp, 80/tcp,
 # 443/tcp (TLS on) and 25/tcp (mail on) to everyone and the API port only to client addresses.
@@ -44,6 +44,7 @@ services:
       OUTPOST_TLS_CERT: ${OUTPOST_TLS_CERT:-}
       OUTPOST_TLS_KEY: ${OUTPOST_TLS_KEY:-}
       OUTPOST_SMTP: ${OUTPOST_SMTP:-off}
+      OUTPOST_RESPONSES: ${OUTPOST_RESPONSES:-off}
       OUTPOST_DNS_PORT: "53"
       OUTPOST_HTTP_PORT: "80"
       OUTPOST_HTTPS_PORT: "443"

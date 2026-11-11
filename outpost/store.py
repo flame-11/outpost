@@ -23,6 +23,7 @@ from outpost import keys, schema
 from outpost.config import Limits
 from outpost.keys import ApiKey
 from outpost.records import format_time, utc_now
+from outpost.responses import ANY_PATH, ResponseSpec, ServedResponse
 from outpost.sealing import seal
 
 log = logging.getLogger("outpost.store")
@@ -80,7 +81,24 @@ class ChannelConflict(Exception):
 
 
 class QuotaExceeded(Exception):
-    """The key already holds its `max_channels`."""
+    """The key already holds its `max_channels`, or the channel its `max_responses`."""
+
+
+_RESPONSE_COLUMNS = "response_id, channel_id, token, path, spec, body, created_at, expires_at"
+
+
+def _served(row: tuple[object, ...]) -> ServedResponse:
+    response_id, channel_id, token, path, spec, body, created_at, expires_at = row
+    return ServedResponse(
+        response_id=str(response_id),
+        channel_id=str(channel_id),
+        token=str(token),
+        path=str(path),
+        spec=ResponseSpec.model_validate_json(str(spec)),
+        body=bytes(body),  # type: ignore[arg-type]
+        created_at=str(created_at),
+        expires_at=str(expires_at),
+    )
 
 
 class Store:
@@ -283,15 +301,94 @@ class Store:
     def challenge_values(self) -> dict[str, tuple[str, ...]]:
         return schema.challenge_values(self._conn)
 
+    def set_response(self, served: ServedResponse, now: str, max_responses: int) -> bool | None:
+        """Store `served`, replacing the channel's response for the same token and path. True when
+        nothing was replaced, False when something was, None when the channel is gone. Raises
+        QuotaExceeded when the channel already holds `max_responses` unexpired responses."""
+        with self._transaction():
+            if (
+                self._conn.execute("SELECT 1 FROM channels WHERE channel_id = ?", (served.channel_id,)).fetchone()
+                is None
+            ):
+                return None
+            self._conn.execute(
+                "DELETE FROM responses WHERE channel_id = ? AND expires_at <= ?", (served.channel_id, now)
+            )
+            replaced = self._conn.execute(
+                "DELETE FROM responses WHERE channel_id = ? AND token = ? AND path = ?",
+                (served.channel_id, served.token, served.path),
+            ).rowcount
+            if not replaced:
+                (held,) = self._conn.execute(
+                    "SELECT COUNT(*) FROM responses WHERE channel_id = ?", (served.channel_id,)
+                ).fetchone()
+                if held >= max_responses:
+                    raise QuotaExceeded
+            self._conn.execute(
+                f"INSERT INTO responses ({_RESPONSE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    served.response_id,
+                    served.channel_id,
+                    served.token,
+                    served.path,
+                    served.spec.model_dump_json(),
+                    served.body,
+                    served.created_at,
+                    served.expires_at,
+                ),
+            )
+            return not replaced
+
+    def responses(self, now: str, channel_id: str | None = None) -> list[ServedResponse]:
+        """Unexpired responses, oldest first; of one channel, or of all."""
+        where, params = (
+            ("expires_at > ?", [now])
+            if channel_id is None
+            else ("expires_at > ? AND channel_id = ?", [now, channel_id])
+        )
+        rows = self._conn.execute(
+            f"SELECT {_RESPONSE_COLUMNS} FROM responses WHERE {where} ORDER BY created_at, rowid", params
+        )
+        return [_served(row) for row in rows]
+
+    def delete_response(self, channel_id: str, response_id: str, now: str) -> ServedResponse | None:
+        """Delete the response; return it when it was unexpired."""
+        with self._transaction():
+            row = self._conn.execute(
+                f"SELECT {_RESPONSE_COLUMNS} FROM responses WHERE channel_id = ? AND response_id = ?",
+                (channel_id, response_id),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("DELETE FROM responses WHERE response_id = ?", (response_id,))
+        served = _served(row)
+        return served if served.expires_at > now else None
+
+    def expire_responses(self, now: str) -> int:
+        return self._conn.execute("DELETE FROM responses WHERE expires_at <= ?", (now,)).rowcount
+
+
+type ResponseIndex = dict[tuple[str, str], dict[str, ServedResponse]]
+
+
+def _index(responses: list[ServedResponse]) -> ResponseIndex:
+    index: ResponseIndex = {}
+    for served in responses:
+        index.setdefault((served.channel_id, served.token), {})[served.path] = served
+    return index
+
 
 class Database:
     """Async face of the Store: one thread owns the connection. A map of known channel ids (with
     their key's channel_rate quota) lets the listeners skip unknown channels without a query."""
 
-    def __init__(self, executor: ThreadPoolExecutor, store: Store, known: dict[str, int | None]) -> None:
+    def __init__(
+        self, executor: ThreadPoolExecutor, store: Store, known: dict[str, int | None], responses: ResponseIndex
+    ) -> None:
         self._executor = executor
         self._store = store
         self._known = known
+        self._responses = responses
 
     @classmethod
     async def open(cls, data_dir: Path, limits: Limits, store_max_bytes: int) -> "Database":
@@ -300,10 +397,11 @@ class Database:
         try:
             store = await loop.run_in_executor(executor, Store, data_dir, limits, store_max_bytes)
             known = await loop.run_in_executor(executor, store.channel_quotas)
+            responses = await loop.run_in_executor(executor, partial(store.responses, format_time(utc_now())))
         except BaseException:
             executor.shutdown(wait=False)
             raise
-        return cls(executor, store, known)
+        return cls(executor, store, known, _index(responses))
 
     async def close(self) -> None:
         await self._run(self._store.close)
@@ -321,6 +419,39 @@ class Database:
     async def refresh_known(self) -> None:
         """Take up channels another process deleted (`outpost-admin key revoke --delete-channels`)."""
         self._known = await self._run(self._store.channel_quotas)
+        self._responses = _index(await self._run(partial(self._store.responses, format_time(utc_now()))))
+
+    def response_for(self, channel_id: str, token: str, path: str | None, now: str) -> ServedResponse | None:
+        """The unexpired response that answers a request for `path` on the channel's token: the
+        one set for that exact path, else the one set for any path."""
+        paths = self._responses.get((channel_id, token))
+        if not paths:
+            return None
+        for key in (path, ANY_PATH) if path is not None else (ANY_PATH,):
+            served = paths.get(key)
+            if served is not None and served.expires_at > now:
+                return served
+        return None
+
+    async def set_response(self, served: ServedResponse, max_responses: int) -> bool | None:
+        created = await self._run(partial(self._store.set_response, served, format_time(utc_now()), max_responses))
+        if created is not None:
+            self._responses.setdefault((served.channel_id, served.token), {})[served.path] = served
+        return created
+
+    async def responses(self, channel_id: str) -> list[ServedResponse]:
+        return await self._run(partial(self._store.responses, format_time(utc_now()), channel_id))
+
+    async def delete_response(self, channel_id: str, response_id: str) -> ServedResponse | None:
+        served = await self._run(partial(self._store.delete_response, channel_id, response_id, format_time(utc_now())))
+        for paths in self._responses.values():
+            for path, held in list(paths.items()):
+                if held.channel_id == channel_id and held.response_id == response_id:
+                    del paths[path]
+        return served
+
+    async def expire_responses(self, now: datetime) -> int:
+        return await self._run(partial(self._store.expire_responses, format_time(now)))
 
     async def api_key(self, key_sha256: str) -> ApiKey | None:
         return await self._run(partial(self._store.api_key, key_sha256))
@@ -348,6 +479,7 @@ class Database:
 
     async def delete_channel(self, channel_id: str) -> bool:
         self._known.pop(channel_id, None)
+        self._responses = {key: paths for key, paths in self._responses.items() if key[0] != channel_id}
         return await self._run(partial(self._store.delete_channel, channel_id))
 
     async def store_full(self) -> bool:
@@ -373,12 +505,15 @@ class Database:
 
 
 async def run_retention_once(db: Database, retention_days: int, now: datetime | None = None) -> RetentionResult:
-    result = await db.retain(now or utc_now(), retention_days)
+    moment = now or utc_now()
+    result = await db.retain(moment, retention_days)
+    expired = await db.expire_responses(moment)
     log.info(
-        "retention: %d records deleted, %d channels deleted %s",
+        "retention: %d records deleted, %d channels deleted %s, %d expired responses deleted",
         result.records_deleted,
         len(result.channels_deleted),
         list(result.channels_deleted),
+        expired,
     )
     return result
 

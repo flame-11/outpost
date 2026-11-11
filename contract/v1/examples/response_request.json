@@ -1,0 +1,32 @@
+{
+  "token": "x1",
+  "path": "/d.dtd",
+  "status": 200,
+  "headers": [
+    [
+      "Content-Type",
+      "application/xml-dtd"
+    ],
+    [
+      "Cache-Control",
+      "no-store"
+    ]
+  ],
+  "body_b64": "PCFFTlRJVFkgJSBkYXRhIFNZU1RFTSAiZmlsZTovLy9ldGMvaG9zdG5hbWUiPgo=",
+  "cors": {
+    "allow_origins": [
+      "https://app.example",
+      "https://*.example.com",
+      "null"
+    ],
+    "allow_credentials": true,
+    "allow_methods": null,
+    "allow_headers": null,
+    "expose_headers": [
+      "X-Token"
+    ],
+    "max_age": 600,
+    "allow_private_network": false
+  },
+  "ttl_seconds": 3600
+}

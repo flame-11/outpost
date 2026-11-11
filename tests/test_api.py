@@ -103,6 +103,7 @@ async def test_channel_answer(stack: Stack) -> None:
         "zone": ZONE,
         "listeners": ["dns", "http"],
         "retention_days": 90,
+        "responses": False,
         "source_rate": 60,
         "channel_rate": 600,
         "last_seq": 2,

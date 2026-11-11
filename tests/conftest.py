@@ -167,7 +167,7 @@ async def open_stack(data_dir: Path, limits: Limits | None = None, **changes: ob
                 notifier=notifier,
                 client=client,
                 responder=DnsResponder(settings, limits, recorder, challenges),
-                web=HttpListener(settings, limits, recorder),
+                web=HttpListener(settings, limits, recorder, db if settings.responses else None),
                 challenges=challenges,
             )
     finally:

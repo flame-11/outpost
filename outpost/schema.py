@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS api_keys (
     max_channels INTEGER,
     channel_rate INTEGER
 ) STRICT;
+CREATE TABLE IF NOT EXISTS responses (
+    response_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    path TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    body BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    UNIQUE (channel_id, token, path)
+) STRICT;
 CREATE TABLE IF NOT EXISTS acme_challenges (
     name TEXT NOT NULL,
     value TEXT NOT NULL,

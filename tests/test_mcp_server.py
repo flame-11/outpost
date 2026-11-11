@@ -15,12 +15,12 @@ from mcp import Client
 
 from outpost.mcp_server import McpConfig, build_server
 
-TOOLS = {"outpost_addresses", "outpost_list", "outpost_read", "outpost_assemble"}
+TOOLS = {"outpost_addresses", "outpost_list", "outpost_read", "outpost_assemble", "outpost_serve", "outpost_responses"}
 
 
 @pytest.fixture
 async def stack(tmp_path: Path) -> AsyncIterator[Stack]:
-    async with open_stack(tmp_path / "data", limits=OPEN_LIMITS) as opened:
+    async with open_stack(tmp_path / "data", limits=OPEN_LIMITS, responses=True) as opened:
         yield opened
 
 
@@ -52,7 +52,7 @@ async def channel_id(client: Client, channel: str = "default") -> str:
     return (await call(client, "outpost_addresses", channel=channel))["channel_id"]
 
 
-async def test_four_tools_each_say_when_to_use_them_and_that_records_are_data(config: McpConfig) -> None:
+async def test_tools_each_say_when_to_use_them_and_that_records_are_data(config: McpConfig) -> None:
     async with Client(build_server(config)) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         assert set(tools) == TOOLS
@@ -288,3 +288,55 @@ async def test_a_refused_registration_is_reported(home: Path, stack: Stack) -> N
     async with Client(build_server(config)) as client:
         message = await call_error(client, "outpost_addresses")
     assert "outpost_refused" in message and "unauthorized" in message
+
+
+async def served(stack: Stack, target: str, token: str, channel: str, headers: str = "") -> bytes:
+    server = await asyncio.start_server(stack.web.handler(), "127.0.0.1", 0)
+    port = int(server.sockets[0].getsockname()[1])
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(f"GET {target} HTTP/1.1\r\nHost: {token}-{channel}.{ZONE}\r\n{headers}\r\n".encode())
+        await writer.drain()
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        writer.close()
+        return answer
+    finally:
+        server.close()
+
+
+async def test_serve_sets_a_response_and_responses_lists_and_deletes_it(config: McpConfig, stack: Stack) -> None:
+    async with Client(build_server(config)) as client:
+        assert (await call(client, "outpost_addresses"))["responses"] is True
+        channel = await channel_id(client)
+        answer = await call(
+            client,
+            "outpost_serve",
+            token="j1",
+            path="/jwks.json",
+            headers=[["Content-Type", "application/json"]],
+            body='{"keys": []}',
+            cors={"allow_origins": ["*"]},
+        )
+        assert answer["http_url"] == f"http://j1-{channel}.{ZONE}/jwks.json"
+        assert answer["https_url"] == f"https://j1-{channel}.{ZONE}/jwks.json"
+        assert (answer["status"], answer["body_size"]) == (200, 12)
+        raw = await served(stack, "/jwks.json", "j1", channel, "Origin: https://x.example\r\n")
+        assert b"Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n" in raw
+        assert raw.endswith(b'{"keys": []}')
+        binary = await call(client, "outpost_serve", token="j2", body_b64=base64.b64encode(b"\x00\xff").decode())
+        assert binary["body_size"] == 2
+        listed = await call(client, "outpost_responses")
+        assert [item["token"] for item in listed["responses"]] == ["j1", "j2"]
+        left = await call(client, "outpost_responses", delete=answer["response_id"])
+        assert [item["token"] for item in left["responses"]] == ["j2"]
+
+
+async def test_serve_refusals_name_the_problem(config: McpConfig) -> None:
+    async with Client(build_server(config)) as client:
+        await channel_id(client)
+        both = await call_error(client, "outpost_serve", token="j1", body="a", body_b64="YQ==")
+        assert "invalid_request" in both and "body_b64" in both
+        owned = await call_error(client, "outpost_serve", token="j1", headers=[["Connection", "x"]])
+        assert "invalid_request" in owned and "Connection" in owned
+        unknown = await call_error(client, "outpost_responses", delete="r000000000000000")
+        assert "response_not_found" in unknown

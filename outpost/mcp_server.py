@@ -6,6 +6,7 @@ here, on the client; the instance never holds anything readable.
 """
 
 import asyncio
+import base64
 import importlib.metadata
 import logging
 import math
@@ -25,16 +26,27 @@ from outpost.client import (
     KeyFile,
     OutpostError,
     Registration,
+    ResponseInfo,
     channel_state,
+    delete_response,
     fetch_record,
     key_file_path,
+    list_responses,
     load_key_file,
     new_http_client,
     open_record,
     pull,
     register,
+    set_response,
 )
 from outpost.records import DnsRecord, HttpRecord, SmtpRecord
+from outpost.responses import (
+    ANY_PATH,
+    RESPONSE_DEFAULT_TTL_SECONDS,
+    RESPONSE_MAX_TTL_SECONDS,
+    CorsRules,
+    ResponseRequest,
+)
 from outpost.views import content_page, detail, row
 
 MAX_TEXT_CHARS = 12_288
@@ -48,7 +60,8 @@ INSTRUCTIONS = (
     "Outpost gives callback addresses (DNS names, web URLs, mail addresses) and records every lookup, "
     "web request and mail that reaches them. Use it to test whether a system makes an outbound lookup, "
     "request or mail. Get addresses with outpost_addresses, put a fresh token in each probe, then check "
-    "with outpost_list and outpost_read. " + UNTRUSTED
+    "with outpost_list and outpost_read. When the instance serves responses, outpost_serve sets what a "
+    "token's web address answers. " + UNTRUSTED
 )
 
 Label = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,39}$", description="channel label")]
@@ -77,6 +90,14 @@ def _existing(label: str) -> KeyFile:
     if not path.exists():
         raise OutpostError("invalid_request", f"channel {label!r} does not exist yet; call outpost_addresses first")
     return load_key_file(path)
+
+
+def _response_view(info: ResponseInfo, key_file: KeyFile) -> dict[str, Any]:
+    """The answer, with the token's URLs for `path` (for `*`, the root); https_url works when the
+    instance runs https (outpost_addresses lists it)."""
+    path = "/" if info.path == ANY_PATH else info.path
+    host = f"{info.token}-{key_file.channel_id}.{key_file.zone}"
+    return {**info.model_dump(), "http_url": f"http://{host}{path}", "https_url": f"https://{host}{path}"}
 
 
 def _matches(record: DnsRecord | HttpRecord | SmtpRecord, tokens: list[str] | None, protocol: str | None) -> bool:
@@ -133,6 +154,7 @@ def build_server(config: McpConfig) -> MCPServer:
             "token_rule": TOKEN_RULE,
             "retention_days": answer.retention_days,
             "rates": rates,
+            "responses": answer.responses,
         }
 
     async def list_records(
@@ -230,11 +252,73 @@ def build_server(config: McpConfig) -> MCPServer:
             "undecodable": list(result.undecodable),
         }
 
+    async def serve(
+        token: Token,
+        channel: Label = "default",
+        path: Annotated[str, Field(description="exact path, or * for any path")] = ANY_PATH,
+        status: Annotated[int, Field(ge=200, le=599)] = 200,
+        headers: Annotated[
+            list[Annotated[list[str], Field(min_length=2, max_length=2)]],
+            Field(description="[name, value] pairs, sent in order; a name may repeat"),
+        ] = [],  # noqa: B006 - the schema default; never mutated
+        # plain `str`: the SDK parses a JSON-looking string argument unless its type is exactly str
+        body: Annotated[str, Field(description="body as UTF-8 text")] = "",
+        body_b64: Annotated[str, Field(description="body as base64, for bytes")] = "",
+        cors: Annotated[CorsRules | None, Field(description="cross-origin rules; null sends none")] = None,
+        ttl_seconds: Annotated[int, Field(ge=1, le=RESPONSE_MAX_TTL_SECONDS)] = RESPONSE_DEFAULT_TTL_SECONDS,
+    ) -> dict[str, Any]:
+        """Set what a token's web address answers: status, headers, body and cross-origin rules.
+
+        A web request to `{token}-<channel_id>.<zone>` (any prefix, any method) whose path is `path` gets this
+        answer until `ttl_seconds` pass; `path` `*` answers any path an exact one does not. Setting the same
+        token and path again replaces it. The request is still recorded, with this `response_id`. Outpost
+        writes Content-Length and Connection itself. With `cors`, a request whose Origin matches
+        `allow_origins` (`*`, `null`, `https://host[:port]` or `https://*.suffix`) gets the Access-Control
+        headers, and a preflight gets 204 with them; without it, set any Access-Control header in `headers`.
+        Body at most 65,536 bytes; at most 64 responses per channel.
+        """
+        with _tool_errors():
+            if body and body_b64:
+                raise OutpostError("invalid_request", "give body or body_b64, not both")
+            encoded = body_b64 or base64.b64encode(body.encode()).decode("ascii")
+            try:
+                request = ResponseRequest(
+                    token=token,
+                    path=path,
+                    status=status,
+                    headers=headers,
+                    body_b64=encoded,
+                    cors=cors,
+                    ttl_seconds=ttl_seconds,
+                )
+            except ValidationError as exc:
+                raise OutpostError("invalid_request", str(exc)) from exc
+            key_file = _existing(channel)
+            async with new_http_client(config.transport) as http:
+                info = await set_response(http, key_file, request)
+        return _response_view(info, key_file)
+
+    async def responses(
+        channel: Label = "default",
+        delete: Annotated[str | None, Field(description="a response_id to delete first")] = None,
+    ) -> dict[str, Any]:
+        """List the responses the channel serves (unexpired, oldest first, without bodies); with `delete`,
+        stop that one first."""
+        with _tool_errors():
+            key_file = _existing(channel)
+            async with new_http_client(config.transport) as http:
+                if delete is not None:
+                    await delete_response(http, key_file, delete)
+                listed = await list_responses(http, key_file)
+        return {"responses": [_response_view(info, key_file) for info in listed]}
+
     tools = (
         (addresses, "outpost_addresses", ""),
         (list_records, "outpost_list", UNTRUSTED),
         (read, "outpost_read", UNTRUSTED),
         (assemble_records, "outpost_assemble", UNTRUSTED),
+        (serve, "outpost_serve", ""),
+        (responses, "outpost_responses", ""),
     )
     for function, name, note in tools:
         description = " ".join((function.__doc__ or "").split())

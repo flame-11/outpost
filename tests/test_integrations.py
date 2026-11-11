@@ -55,6 +55,8 @@ def test_the_desktop_extension_runs_the_server_with_user_config() -> None:
         "outpost_list",
         "outpost_read",
         "outpost_assemble",
+        "outpost_serve",
+        "outpost_responses",
     }
 
 

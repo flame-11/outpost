@@ -68,6 +68,10 @@ async def _certificates(settings: Settings) -> Certificates | None:
     return certificates
 
 
+def _responses(settings: Settings, db: Database) -> Database | None:
+    return db if settings.responses else None
+
+
 async def _known_loop(db: Database) -> None:
     while True:
         await asyncio.sleep(KNOWN_REFRESH_SECONDS)
@@ -127,7 +131,9 @@ async def run(
         dns_port = int(udp_transport.get_extra_info("sockname")[1])
         dns_tcp = await asyncio.start_server(dns_tcp_handler(responder), settings.bind_ip, dns_port)
         web = await asyncio.start_server(
-            HttpListener(settings, limits, recorder).handler(), settings.bind_ip, settings.http_port
+            HttpListener(settings, limits, recorder, _responses(settings, db)).handler(),
+            settings.bind_ip,
+            settings.http_port,
         )
         mail = (
             await loop.create_server(
@@ -159,7 +165,7 @@ async def run(
             https_port: int | None = None
             if certificates is not None and certificates.loaded:
                 https = await asyncio.start_server(
-                    HttpListener(settings, limits, recorder, tls=True).handler(),
+                    HttpListener(settings, limits, recorder, _responses(settings, db), tls=True).handler(),
                     settings.bind_ip,
                     settings.https_port,
                     ssl=certificates.server_context(),
@@ -177,7 +183,7 @@ async def run(
             )
             if api_task is not None:
                 log.info(
-                    "serving: dns %d udp+tcp, http %d, https %s, smtp %s, api %d%s, retention %d days",
+                    "serving: dns %d udp+tcp, http %d, https %s, smtp %s, api %d%s, retention %d days, responses %s",
                     ports.dns,
                     ports.http,
                     ports.https,
@@ -185,6 +191,7 @@ async def run(
                     ports.api,
                     " tls" if certificates is not None else "",
                     settings.retention_days,
+                    "on" if settings.responses else "off",
                 )
                 if on_ready is not None:
                     on_ready(ports)

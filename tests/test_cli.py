@@ -31,7 +31,9 @@ async def running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     limits = Limits(source_rate=100_000, channel_rate=100_000, dns_source_rate=100_000)
     stop = asyncio.Event()
     ready: asyncio.Future[BoundPorts] = asyncio.get_running_loop().create_future()
-    server = asyncio.create_task(run(make_settings(tmp_path / "data"), limits, stop, on_ready=ready.set_result))
+    server = asyncio.create_task(
+        run(make_settings(tmp_path / "data", responses=True), limits, stop, on_ready=ready.set_result)
+    )
     try:
         ports = await asyncio.wait_for(ready, timeout=10)
         api = f"http://127.0.0.1:{ports.api}"
@@ -177,3 +179,42 @@ async def test_delete_removes_the_channel_and_its_key_file(
     assert not (running.home / "channels" / "gone.json").exists()
     assert await cli("channel", "status", "--channel", "gone") == 1
     assert "key_file_unreadable" in capsys.readouterr().err
+
+
+async def http_get(running: Running, host: str, target: str, headers: str = "") -> bytes:
+    reader, writer = await asyncio.open_connection("127.0.0.1", running.ports.http)
+    writer.write(f"GET {target} HTTP/1.1\r\nHost: {host}\r\n{headers}\r\n".encode())
+    await writer.drain()
+    answer = await asyncio.wait_for(reader.read(), timeout=5)
+    writer.close()
+    return answer
+
+
+async def test_response_set_list_delete(running: Running, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    channel_id = await create(capsys)
+    dtd = tmp_path / "d.dtd"
+    dtd.write_bytes(b"<!ENTITY x 'y'>")
+    argv = ["response", "set", "s1", "--path", "/d.dtd", "--body-file", str(dtd), "--header", "Content-Type: text/xml"]
+    assert await cli(*argv, "--cors-origin", "https://a.example", "--cors-credentials", "--ttl", "60") == 0
+    response_id, token, path, status, size, _, url = capsys.readouterr().out.strip().split("\t")
+    assert (token, path, status, size) == ("s1", "/d.dtd", "200", "15")
+    assert url == f"http://s1-{channel_id}.{ZONE}/d.dtd"
+    answer = await http_get(running, f"s1-{channel_id}.{ZONE}", "/d.dtd", "Origin: https://a.example\r\n")
+    assert answer.startswith(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nAccess-Control-Allow-Origin: https://a.example"
+    )
+    assert answer.endswith(b"\r\n\r\n<!ENTITY x 'y'>")
+    assert await cli("response", "list") == 0
+    assert capsys.readouterr().out.startswith(response_id)
+    assert await cli("response", "delete", response_id) == 0
+    assert capsys.readouterr().out == f"deleted\t{response_id}\n"
+    assert (await http_get(running, f"s1-{channel_id}.{ZONE}", "/d.dtd")).endswith(
+        b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+
+
+async def test_response_set_refuses_a_malformed_header(running: Running, capsys: pytest.CaptureFixture[str]) -> None:
+    await create(capsys)
+    assert await cli("response", "set", "s1", "--header", "no colon") == 1
+    assert await cli("response", "set", "s1", "--header", "Content-Length: 3") == 1
+    assert "Content-Length" in capsys.readouterr().err

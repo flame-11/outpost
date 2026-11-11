@@ -20,6 +20,7 @@ from outpost.models import (
     SealedRecord,
 )
 from outpost.records import OPENED_RECORD, DnsRecord, HttpRecord
+from outpost.responses import ResponseAnswer, ResponseRequest
 from outpost.sealing import new_key_pair, open_sealed, seal
 
 
@@ -34,6 +35,8 @@ from outpost.sealing import new_key_pair, open_sealed, seal
         ("sealed_record.json", SealedRecord),
         ("record_dns.json", DnsRecord),
         ("record_http.json", HttpRecord),
+        ("response_request.json", ResponseRequest),
+        ("response_answer.json", ResponseAnswer),
     ],
 )
 def test_example_validates_and_round_trips(file: str, model: type[HealthAnswer]) -> None:
@@ -52,7 +55,8 @@ def test_sealed_example_opens_to_the_opened_example() -> None:
     sealed = example("sealed_record.json")
     plaintext = open_sealed(base64.b64decode(str(keys["private_key"])), base64.b64decode(str(sealed["sealed"])))
     opened = OPENED_RECORD.validate_json(plaintext)
-    assert opened.model_dump() == example("record_http.json")
+    assert opened.model_dump(exclude_unset=True) == example("record_http.json")
+    assert isinstance(opened, HttpRecord) and opened.response_id is None  # a record from before 1.1
     assert opened.received_at == sealed["received_at"]
     assert example("records_page.json")["records"] == [sealed]
 
@@ -87,6 +91,8 @@ def test_examples_directory_lists_what_the_contract_publishes() -> None:
         "errors.json",
         "sealed_record.json",
         "test_only_keypair.json",
+        "response_request.json",
+        "response_answer.json",
     } <= names
 
 

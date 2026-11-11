@@ -13,6 +13,9 @@ recorded.
 - For each channel: its id, public key, the SHA-256 of its secret, its owning API key,
   timestamps and drop counters. For each API key: its name, the SHA-256 of the key, quotas.
 - The TLS private key of the zone's certificate, when TLS is on.
+- With responses on: each unexpired response a channel set, as sent (token, path, status,
+  headers, body). Responses are public by nature, so they are not sealed; each is deleted
+  when it expires (at most a day after it was set), is replaced, or its channel is deleted.
 
 ## What a compromise exposes
 
@@ -26,7 +29,13 @@ recorded.
 
 - Name server: authoritative for one zone only; every other name is refused. No recursion.
   Answers are small and rate-limited per source address.
-- Web listener: answers every request with an empty `200` and serves no content.
+- Web listener: answers an empty `200`, except a request to a token whose channel set a
+  response (responses on). Such a response is served only on that channel's own names, at
+  most 64 KiB, for at most a day, and its headers cannot replace the framing Outpost writes
+  (`Content-Length`, `Connection`, `Transfer-Encoding` and the other hop-by-hop headers).
+  Anyone holding an API key can therefore host content and redirects on the zone for a day:
+  hand out keys accordingly. Logs carry the channel id, response id, size and SHA-256 of
+  every body set.
 - Mail receiver: accepts mail only for recipients that name an existing channel, never relays
   or sends.
 - API: should be reachable only from client addresses (firewall) or through a tunnel; failed

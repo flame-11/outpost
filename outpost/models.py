@@ -11,7 +11,9 @@ from outpost.records import ChannelId, StrictModel, Timestamp
 Listener = Literal["dns", "http", "https", "smtp"]
 ErrorCode = Literal[
     "unauthorized",
+    "responses_off",
     "channel_not_found",
+    "response_not_found",
     "channel_conflict",
     "invalid_request",
     "rate_limited",
@@ -58,6 +60,7 @@ class RegistrationAnswer(StrictModel):
     retention_days: Count
     source_rate: Rate  # stored records a minute, per source address
     channel_rate: Rate  # stored records a minute, for the channel
+    responses: bool  # the instance serves the responses channels set (section 9)
 
 
 class ChannelAnswer(StrictModel):
@@ -67,6 +70,7 @@ class ChannelAnswer(StrictModel):
     retention_days: Count
     source_rate: Rate
     channel_rate: Rate
+    responses: bool
     last_seq: Count
     held_records: Count
     dropped_total: Count

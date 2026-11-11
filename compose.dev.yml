@@ -18,6 +18,7 @@ services:
       OUTPOST_RETENTION_DAYS: "90"
       OUTPOST_TLS: "off"
       OUTPOST_SMTP: "on"
+      OUTPOST_RESPONSES: "on"
       OUTPOST_DNS_PORT: "53"
       OUTPOST_HTTP_PORT: "80"
       OUTPOST_SMTP_PORT: "25"

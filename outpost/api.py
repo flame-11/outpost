@@ -8,6 +8,7 @@ import logging
 import math
 import sqlite3
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Annotated, NoReturn
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -32,7 +33,16 @@ from outpost.models import (
 )
 from outpost.rates import RateWindow
 from outpost.recorder import Notifier
-from outpost.records import utc_now
+from outpost.records import format_time, utc_now
+from outpost.responses import (
+    CHANNEL_MAX_RESPONSES,
+    ResponseAnswer,
+    ResponseList,
+    ResponseRequest,
+    ResponseSpec,
+    ServedResponse,
+    new_response_id,
+)
 from outpost.store import ChannelConflict, Database, Page, QuotaExceeded
 
 log = logging.getLogger("outpost.api")
@@ -83,9 +93,12 @@ def create_app(ctx: ApiContext) -> FastAPI:
     async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:
         errors = exc.errors()
         first = errors[0] if errors else {}
-        location = [str(part) for part in first.get("loc", ()) if part not in ("body", "query", "path")]
-        field = ".".join(location) or "body"
-        return _error_response(422, "invalid_request", f"{field}: {first.get('msg', 'invalid')}")
+        loc = list(first.get("loc", ()))
+        location = [str(part) for part in (loc[1:] if loc and loc[0] in ("body", "query", "path") else loc)]
+        field = ".".join(location)
+        message = str(first.get("msg", "invalid")).removeprefix("Value error, ")
+        # A rule over several fields names its field in its own message.
+        return _error_response(422, "invalid_request", f"{field}: {message}" if field else message)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -173,6 +186,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
             retention_days=_retention(registration.retention_days),
             source_rate=limits.source_rate,
             channel_rate=limits.channel_rate_for(registration.key_channel_rate),
+            responses=settings.responses,
         )
         return JSONResponse(status_code=201 if registration.created else 200, content=answer.model_dump())
 
@@ -188,6 +202,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
             retention_days=_retention(status.retention_days),
             source_rate=limits.source_rate,
             channel_rate=limits.channel_rate_for(status.key_channel_rate),
+            responses=settings.responses,
             last_seq=status.last_seq,
             held_records=status.held_records,
             dropped_total=status.dropped_total,
@@ -223,6 +238,63 @@ def create_app(ctx: ApiContext) -> FastAPI:
             more=page.more,
             dropped_total=page.dropped_total,
         )
+
+    def _responses_on() -> None:
+        if not settings.responses:
+            raise ApiError(403, "responses_off", "this instance serves no responses")
+
+    @app.post(
+        "/v1/channels/{channel_id}/responses",
+        status_code=201,
+        response_model=ResponseAnswer,
+        responses={200: {"model": ResponseAnswer, "description": "replaced the response for this token and path"}},
+        dependencies=[Depends(_responses_on)],
+    )
+    async def set_response(body: ResponseRequest, channel_id: Annotated[str, Depends(channel)]) -> JSONResponse:
+        now = utc_now()
+        served = ServedResponse(
+            response_id=new_response_id(),
+            channel_id=channel_id,
+            token=body.token,
+            path=body.path,
+            spec=ResponseSpec(status=body.status, headers=body.headers, cors=body.cors),
+            body=body.body(),
+            created_at=format_time(now),
+            expires_at=format_time(now + timedelta(seconds=body.ttl_seconds)),
+        )
+        try:
+            created = await db.set_response(served, CHANNEL_MAX_RESPONSES)
+        except QuotaExceeded as exc:
+            raise ApiError(
+                429, "quota_exceeded", f"the channel holds {CHANNEL_MAX_RESPONSES} unexpired responses"
+            ) from exc
+        if created is None:
+            raise ApiError(404, "channel_not_found", f"no channel {channel_id}")
+        answer = served.answer()
+        log.info(
+            "response set: %s %s, %d bytes, sha256 %s",
+            channel_id,
+            served.response_id,
+            answer.body_size,
+            answer.body_sha256,
+        )
+        return JSONResponse(status_code=201 if created else 200, content=answer.model_dump())
+
+    @app.get("/v1/channels/{channel_id}/responses", dependencies=[Depends(_responses_on)])
+    async def list_responses(channel_id: Annotated[str, Depends(channel)]) -> ResponseList:
+        return ResponseList(responses=[served.answer() for served in await db.responses(channel_id)])
+
+    @app.delete(
+        "/v1/channels/{channel_id}/responses/{response_id}",
+        status_code=204,
+        response_class=Response,
+        dependencies=[Depends(_responses_on)],
+    )
+    async def delete_response(channel_id: Annotated[str, Depends(channel)], response_id: str) -> Response:
+        if await db.delete_response(channel_id, response_id) is None:
+            raise ApiError(404, "response_not_found", f"no response {response_id}")
+        log.info("response deleted: %s %s", channel_id, response_id)
+        return Response(status_code=204)
 
     return app
 

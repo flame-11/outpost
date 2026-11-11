@@ -28,7 +28,9 @@ from outpost.tls import Certificates, watch_certificates
 
 @contextlib.asynccontextmanager
 async def https_listening(stack: Stack, certificates: Certificates) -> AsyncIterator[int]:
-    listener = HttpListener(stack.settings, stack.limits, stack.recorder, tls=True)
+    listener = HttpListener(
+        stack.settings, stack.limits, stack.recorder, stack.db if stack.settings.responses else None, tls=True
+    )
     server = await asyncio.start_server(listener.handler(), "127.0.0.1", 0, ssl=certificates.server_context())
     try:
         yield int(server.sockets[0].getsockname()[1])

@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "outpost",
   "display_name": "Outpost",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Callback addresses that record DNS lookups, web requests and mail, read on your machine",
   "author": { "name": "Outpost" },
   "license": "MIT",
@@ -22,7 +22,9 @@
     { "name": "outpost_addresses", "description": "Get the channel's callback addresses, creating the channel on first use" },
     { "name": "outpost_list", "description": "List the records that reached the addresses" },
     { "name": "outpost_read", "description": "Read one record in full" },
-    { "name": "outpost_assemble", "description": "Reassemble data sent as many lookups of one token" }
+    { "name": "outpost_assemble", "description": "Reassemble data sent as many lookups of one token" },
+    { "name": "outpost_serve", "description": "Set what a token's web address answers: status, headers, body, cross-origin rules" },
+    { "name": "outpost_responses", "description": "List or delete the responses the channel serves" }
   ],
   "user_config": {
     "api_url": {

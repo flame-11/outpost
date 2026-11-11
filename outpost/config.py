@@ -77,6 +77,7 @@ class Settings:
     https_port: int = 443
     smtp: bool = False
     smtp_port: int = 25
+    responses: bool = False  # channels may set what their names answer (CONTRACT section 9)
 
     @property
     def listeners(self) -> tuple[str, ...]:
@@ -117,6 +118,7 @@ class Settings:
             https_port=_port(env, "OUTPOST_HTTPS_PORT", 443),
             smtp=_switch(env, "OUTPOST_SMTP"),
             smtp_port=_port(env, "OUTPOST_SMTP_PORT", 25),
+            responses=_switch(env, "OUTPOST_RESPONSES"),
         )
 
 

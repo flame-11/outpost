@@ -1,0 +1,35 @@
+{
+  "response_id": "r4f7k2m9q1x8c3v6",
+  "token": "x1",
+  "path": "/d.dtd",
+  "status": 200,
+  "headers": [
+    [
+      "Content-Type",
+      "application/xml-dtd"
+    ],
+    [
+      "Cache-Control",
+      "no-store"
+    ]
+  ],
+  "cors": {
+    "allow_origins": [
+      "https://app.example",
+      "https://*.example.com",
+      "null"
+    ],
+    "allow_credentials": true,
+    "allow_methods": null,
+    "allow_headers": null,
+    "expose_headers": [
+      "X-Token"
+    ],
+    "max_age": 600,
+    "allow_private_network": false
+  },
+  "body_size": 47,
+  "body_sha256": "0afbb14e8684b49f62d846aa70fe37ff2c2d4afc384205ce179d7d9626b12499",
+  "created_at": "2026-11-11T08:15:30.123Z",
+  "expires_at": "2026-11-11T09:15:30.123Z"
+}

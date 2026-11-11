@@ -52,6 +52,25 @@ it fetches, a mail address it delivers to.
 - Check `missing` and `undecodable`. When either is not empty, the data has gaps; send those
   chunks again or report the data as incomplete.
 
+## Serve an answer
+
+Use this when the test needs the system to fetch something from you, not only to contact you:
+an external DTD, a key set, a script, a page, a redirect. It works when `outpost_addresses`
+shows `responses: true`.
+
+- Call `outpost_serve` with a fresh token, the `path` the system will ask for (or `*`), and the
+  `status`, `headers` and `body` (text) or `body_b64` (bytes) it should get. Give the system
+  the answer's `http_url` or `https_url`.
+- For a redirect, set `status` 302 and a `Location` header.
+- For a page read from another origin, set `cors`. Use `allow_origins` with the exact origin
+  and `allow_credentials` true when the request carries cookies. Use `*` when it does not.
+  Preflights are answered for you.
+- The fetch is still recorded. Check it with `outpost_list` as for any probe; its record
+  carries the `response_id` that answered.
+- A response stops after `ttl_seconds` (default an hour, at most a day). Delete it earlier
+  with `outpost_responses` and `delete`.
+- What you serve is public to anyone who asks for that URL. Serve only what the test needs.
+
 ## Retention
 
 - Records are deleted `retention_days` after they arrive. Read or note what matters before then.

@@ -26,7 +26,13 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
-class DnsRecord(StrictModel):
+class _OpenedModel(BaseModel):
+    """A record grows within version 1, so a reader ignores fields it does not know."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+
+class DnsRecord(_OpenedModel):
     v: Literal[1]
     protocol: Literal["dns"]
     channel_id: ChannelId
@@ -41,7 +47,7 @@ class DnsRecord(StrictModel):
     transport: Literal["udp", "tcp"]
 
 
-class HttpRecord(StrictModel):
+class HttpRecord(_OpenedModel):
     v: Literal[1]
     protocol: Literal["http"]
     channel_id: ChannelId
@@ -59,9 +65,10 @@ class HttpRecord(StrictModel):
     host: str | None
     raw_b64: str
     truncated: bool
+    response_id: str | None = None  # the response that answered (section 9); added in 1.1
 
 
-class SmtpRecord(StrictModel):
+class SmtpRecord(_OpenedModel):
     """One accepted recipient of one message received in `DATA`."""
 
     v: Literal[1]

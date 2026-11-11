@@ -4,5 +4,6 @@
   "listeners": ["dns", "http", "https", "smtp"],
   "retention_days": 90,
   "source_rate": 60,
-  "channel_rate": 600
+  "channel_rate": 600,
+  "responses": true
 }

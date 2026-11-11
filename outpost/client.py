@@ -1,4 +1,5 @@
-"""The client library: key files, registration, channel state, pulls, opening records, deletion.
+"""The client library: key files, registration, channel state, pulls, opening records, deletion,
+and the responses a channel serves.
 
 A key file holds the API address, the channel id, the X25519 private key and the channel secret.
 It is written (mode 0600) before registration, so a repeat after an uncertain answer registers
@@ -17,7 +18,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from nacl.exceptions import CryptoError
@@ -25,6 +26,7 @@ from nacl.public import PrivateKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from outpost.records import OPENED_RECORD, ChannelId, DnsRecord, HttpRecord, SmtpRecord, StrictModel, Timestamp
+from outpost.responses import ResponseRequest
 from outpost.sealing import open_sealed
 
 HTTP_TIMEOUT_SECONDS = 10.0
@@ -76,6 +78,7 @@ class Registration(Answer):
     retention_days: Count
     source_rate: Count | None = None
     channel_rate: Count | None = None
+    responses: bool = False  # absent before Outpost 1.1
 
 
 class ChannelState(Registration):
@@ -94,6 +97,25 @@ class RecordsPage(Answer):
     records: list[SealedRecord]
     more: bool
     dropped_total: Count
+
+
+class ResponseInfo(Answer):
+    """A response the channel serves (CONTRACT section 9), without its body."""
+
+    response_id: str
+    token: str
+    path: str
+    status: int
+    headers: list[list[str]]
+    cors: dict[str, Any] | None
+    body_size: Count
+    body_sha256: str
+    created_at: Timestamp
+    expires_at: Timestamp
+
+
+class _ResponseList(Answer):
+    responses: list[ResponseInfo]
 
 
 class _ErrorDetail(Answer):
@@ -240,6 +262,22 @@ async def fetch_record(http: httpx.AsyncClient, key_file: KeyFile, seq: int) -> 
                 return open_record(key_file, record)
             break
     raise OutpostError("record_not_found", f"record {seq} is not held")
+
+
+async def set_response(http: httpx.AsyncClient, key_file: KeyFile, request: ResponseRequest) -> ResponseInfo:
+    """Set what the channel's token answers on `request.path`, replacing what it answered there before."""
+    body = request.model_dump(mode="json")
+    response = await _call(http, "POST", f"{_channel_url(key_file)}/responses", key_file.secret, json=body)
+    return _parse(ResponseInfo, response)
+
+
+async def list_responses(http: httpx.AsyncClient, key_file: KeyFile) -> list[ResponseInfo]:
+    response = await _call(http, "GET", f"{_channel_url(key_file)}/responses", key_file.secret)
+    return _parse(_ResponseList, response).responses
+
+
+async def delete_response(http: httpx.AsyncClient, key_file: KeyFile, response_id: str) -> None:
+    await _call(http, "DELETE", f"{_channel_url(key_file)}/responses/{response_id}", key_file.secret)
 
 
 def _channel_url(key_file: KeyFile) -> str:

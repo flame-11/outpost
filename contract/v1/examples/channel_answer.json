@@ -5,6 +5,7 @@
   "retention_days": 90,
   "source_rate": 60,
   "channel_rate": 600,
+  "responses": true,
   "last_seq": 17,
   "held_records": 17,
   "dropped_total": 0

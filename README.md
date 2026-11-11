@@ -4,8 +4,10 @@ Outpost is a public callback catcher for out-of-band testing. It is the authorit
 server for one DNS zone and runs web (HTTP and HTTPS) and mail listeners. Lookups, web
 requests and mail that reach a channel's addresses are recorded. Each record is sealed to the
 channel's public key before it is written, so the public host holds nothing readable; clients
-pull the records through an HTTP API and open them locally. Outpost serves no content, sends
-or relays no mail and does no recursion.
+pull the records through an HTTP API and open them locally. Outpost sends or relays no mail
+and does no recursion. Its web addresses answer an empty `200`, unless the operator turns on
+responses and a channel sets what one of its tokens answers: status, headers, body and
+cross-origin rules, for a limited time.
 
 The `outpost` client is a command line tool, a Python library and a local MCP server, so
 agents such as Claude Code, Codex CLI and Claude Desktop can hand out addresses and read what
@@ -41,6 +43,11 @@ outpost list [--after N] [--wait S]
 outpost read SEQ [--part N]
 outpost watch
 outpost assemble TOKEN --encoding hex|base32 [--out FILE]
+outpost response set TOKEN [--path P] [--status N] [--header 'Name: value']... [--body TEXT | --body-file FILE]
+    [--cors-origin ORIGIN]... [--cors-credentials] [--cors-method M]... [--cors-header H]...
+    [--cors-expose H]... [--cors-max-age S] [--cors-private-network] [--ttl S]
+outpost response list
+outpost response delete RESPONSE_ID
 outpost channel delete
 ```
 
@@ -48,9 +55,10 @@ outpost channel delete
 
 ### Agents
 
-`outpost mcp` runs a stdio MCP server with four tools: `outpost_addresses` (creates the channel
+`outpost mcp` runs a stdio MCP server with six tools: `outpost_addresses` (creates the channel
 on first use and shows its names, URLs, mail address and rates), `outpost_list`,
-`outpost_read` and `outpost_assemble`. Records are opened by this local process.
+`outpost_read`, `outpost_assemble`, and `outpost_serve` and `outpost_responses` (set, list and
+delete what a token's web address answers). Records are opened by this local process.
 `integrations/README.md` has ready configuration for Claude Code (command or plugin), Codex CLI
 and Claude Desktop, and `skills/outpost/SKILL.md` is the skill that goes with it.
 
@@ -93,6 +101,13 @@ is optional. `OUTPOST_TLS=files` uses a certificate pair you place under `/var/l
 serves HTTPS on 443, the API and mail STARTTLS, and is reloaded when its files change. The API
 then serves only TLS, and starts once a certificate is loaded.
 
+**Responses.** `OUTPOST_RESPONSES=on` lets each channel set what its own names answer to web
+requests, per token and path (`docs/API.md` section 9): a status, free headers, a body of up to
+64 KiB and cross-origin rules that match origins exactly, by `*.suffix`, `null` or `*`. A
+response lasts at most a day and is stored unsealed, since it is public. With it off, every
+web request gets the empty `200`. Hosting chosen content on a zone with a valid certificate
+invites abuse reports, so give API keys only to people you trust with that.
+
 **Mail.** `OUTPOST_SMTP=on` receives mail on 25 for any address at a channel's names, one
 record per recipient. It offers STARTTLS when TLS is on, refuses unknown recipients, never
 offers AUTH and never relays.
@@ -117,6 +132,7 @@ offers AUTH and never relays.
 | `OUTPOST_ACME_STAGING` | `false` | use the staging authority |
 | `OUTPOST_TLS_CERT`, `OUTPOST_TLS_KEY` | none | certificate and key paths for `files` |
 | `OUTPOST_SMTP` | `off` | `on` runs the mail receiver |
+| `OUTPOST_RESPONSES` | `off` | `on` lets channels set what their names answer |
 | `OUTPOST_DNS_PORT`, `OUTPOST_HTTP_PORT`, `OUTPOST_HTTPS_PORT`, `OUTPOST_SMTP_PORT`, `OUTPOST_API_PORT` | `53`, `80`, `443`, `25`, `9443` | listener ports |
 | `OUTPOST_DATA_DIR` | `/var/lib/outpost` | directory of `outpost.sqlite3` and the certificates |
 

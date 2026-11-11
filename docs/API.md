@@ -54,8 +54,9 @@ Name server (UDP and TCP, authoritative, no recursion):
 | a name outside the zone | `REFUSED` |
 
 Web listener (80, and 443 with TLS, HTTP/1.1 only): reads at most `HTTP_MAX_BYTES`, for at
-most `HTTP_READ_SECONDS`, then sends `HTTP/1.1 200 OK`, `Content-Length: 0`,
-`Connection: close` and closes. Same answer for every method, path and host.
+most `HTTP_READ_SECONDS`, then answers and closes. A request whose pair names a channel that
+holds a matching response (section 9) gets that response. Every other request gets
+`HTTP/1.1 200 OK`, `Content-Length: 0`, `Connection: close`.
 
 Mail receiver (25, STARTTLS offered when a certificate is loaded):
 
@@ -69,8 +70,9 @@ Mail receiver (25, STARTTLS offered when a certificate is loaded):
 | `DATA` accepted | `250 2.0.0 OK` |
 | `AUTH`, `VRFY`, `EXPN` | `502 5.5.1` |
 
-Outpost never sends, relays or forwards mail, never serves content, and opens no
-outbound connection except to the certificate authority.
+Outpost never sends, relays or forwards mail, serves no content except the responses a
+channel sets for its own names, and opens no outbound connection except to the certificate
+authority.
 
 ## 3. Limits and retention
 
@@ -133,11 +135,13 @@ Errors: a 4xx or 5xx status with `{"error": {"code": "<code>", "message": "<text
 | Status | `code` | When |
 |---|---|---|
 | 401 | `unauthorized` | missing or wrong bearer value |
+| 403 | `responses_off` | a response route on an instance that serves no responses (section 9) |
 | 404 | `channel_not_found` | the channel id is unknown or deleted (one answer for both) |
+| 404 | `response_not_found` | the response id is unknown, expired or deleted |
 | 409 | `channel_conflict` | registration: this public key is registered with another secret |
 | 422 | `invalid_request` | a field is missing or malformed; `message` names it. Also an unknown route (404) or method (405) |
 | 429 | `rate_limited` | `AUTH_FAIL_RATE` passed; carries `Retry-After` |
-| 429 | `quota_exceeded` | registration: the API key's channel quota is used up (section 7) |
+| 429 | `quota_exceeded` | registration: the API key's channel quota is used up (section 7); a new response past `CHANNEL_MAX_RESPONSES` (section 9) |
 | 503 | `storage_unavailable` | Outpost could not read or write its store |
 
 ### `GET /v1/health`
@@ -249,6 +253,9 @@ Web request (`protocol: "http"`):
 | `method`, `target`, `host` | string or null | read from the request line and `Host`; null when not readable |
 | `raw_b64` | string | the request bytes as received, at most `HTTP_MAX_BYTES` |
 | `truncated` | bool | true when the request was longer than `raw_b64` |
+| `response_id` | string or null | the response (section 9) that answered; null for the empty `200`. Added in 1.1: a record from an earlier instance has no such field |
+
+Clients ignore record and answer fields they do not know, since version 1 grows.
 
 Mail (`protocol: "smtp"`): one record per accepted recipient.
 
@@ -316,3 +323,153 @@ client can open the records. The convention the `outpost` client follows:
 - Resolvers retry, so a chunk may arrive more than once; one copy per index is kept.
 - About 130 bytes fit in one lookup as base32, about 105 as hex, depending on the length of
   the zone name. Mind the instance's `source_rate` when sending many chunks.
+
+## 9. Responses (Outpost 1.1)
+
+A channel may set what its own names answer to web requests: a status, headers, a body and
+cross-origin rules, per token and path. Requests that a response answers are still recorded
+as in section 6, with the answering `response_id`. Additive to version 1.
+
+An instance serves responses only when the operator turns them on (`OUTPOST_RESPONSES=on`,
+default off). The registration and channel answers carry `responses` (bool); with it false,
+every route below answers `403 responses_off`.
+
+### Matching
+
+- A response answers a web request (80, or 443 with TLS) whose pair (section 1) is its
+  token and channel, prefix or not, any method.
+- `path` is `*` or an exact path. The request's path is the request target up to the first
+  `?` (for an absolute-form target, the path of that URL), compared byte for byte: no
+  decoding, no case change, no normalisation. An exact path wins over `*`.
+- A request no response matches gets the empty `200`. So does a request after its
+  response expired or was deleted.
+
+### Limits
+
+| Name | Value | Effect past the limit |
+|---|---|---|
+| `RESPONSE_MAX_BODY_BYTES` | 65,536 | `422 invalid_request` |
+| `RESPONSE_MAX_HEADERS` | 32 headers, 8,192 bytes of names and values | `422 invalid_request` |
+| `RESPONSE_MAX_TTL_SECONDS` | 86,400; default 3,600 | `422 invalid_request` |
+| `CHANNEL_MAX_RESPONSES` | 64 unexpired responses per channel | `429 quota_exceeded` |
+
+### `POST /v1/channels/{channel_id}/responses`
+
+Bearer: the channel secret. Sets the response of one token and path. A response already
+held for the same `token` and `path` is replaced: `200` with a new `response_id`; otherwise
+`201`.
+
+```json
+{
+  "token": "x1",
+  "path": "/d.dtd",
+  "status": 200,
+  "headers": [["Content-Type", "application/xml-dtd"], ["Cache-Control", "no-store"]],
+  "body_b64": "PCFFTlRJVFkgJSBk...",
+  "cors": null,
+  "ttl_seconds": 3600
+}
+```
+
+| Field | Default | Rule |
+|---|---|---|
+| `token` | required | as in section 1 |
+| `path` | `*` | `*`, or `/` followed by at most 1,023 visible ASCII characters other than `?` and `#` |
+| `status` | 200 | 200 to 599. With 204 or 304 the body must be empty |
+| `headers` | `[]` | pairs `[name, value]`, sent in this order; a name may repeat |
+| `body_b64` | `""` | standard base64 of the body |
+| `cors` | null | cross-origin rules, below |
+| `ttl_seconds` | 3,600 | 1 to `RESPONSE_MAX_TTL_SECONDS`; the response stops answering at `expires_at` |
+
+Header rules:
+
+- A name is 1 to 64 token characters (RFC 9110: letters, digits and ``!#$%&'*+-.^_`|~``). A
+  value is at most 4,096 characters of visible ASCII, space and tab.
+- Outpost writes these itself, and refuses them in `headers` (any letter case):
+  `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`,
+  `TE`, `Trailer`, `Upgrade`.
+- With `cors` set, names that start with `Access-Control-` are refused; without it they
+  are free, like every other header.
+
+`cors`:
+
+```json
+{
+  "allow_origins": ["https://app.example", "https://*.example.com", "null"],
+  "allow_credentials": true,
+  "allow_methods": null,
+  "allow_headers": null,
+  "expose_headers": ["X-Token"],
+  "max_age": 600,
+  "allow_private_network": false
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `allow_origins` | required, 1 to 32 | `*` matches any `Origin`. `null` matches `Origin: null`. `scheme://host[:port]` matches that origin (scheme and host in any letter case). `scheme://*.suffix[:port]` matches any host that ends with `.suffix`, with the same scheme and port |
+| `allow_credentials` | false | send `Access-Control-Allow-Credentials: true` |
+| `allow_methods` | null | the methods a preflight allows; null allows the method it asks for |
+| `allow_headers` | null | the request headers a preflight allows; null allows those it asks for |
+| `expose_headers` | `[]` | `Access-Control-Expose-Headers` on the actual response |
+| `max_age` | null | `Access-Control-Max-Age` on a preflight, 0 to 86,400 |
+| `allow_private_network` | false | `Access-Control-Allow-Private-Network: true` on a preflight that asks for it |
+
+How `cors` answers a request whose `Origin` header matches an entry:
+
+- `Access-Control-Allow-Origin` is `*` when the matching entry is `*` and
+  `allow_credentials` is false. Otherwise it is the request's `Origin` value, with
+  `Vary: Origin`.
+- A **preflight** is an `OPTIONS` request with `Access-Control-Request-Method`. It is
+  answered `204` with no body, and gets none of the response's `status`, `headers` or body.
+  It gets:
+  - `Access-Control-Allow-Origin`;
+  - `Access-Control-Allow-Credentials`, when `allow_credentials` is true;
+  - `Access-Control-Allow-Methods`: `allow_methods` joined with `, `, or else the method asked for;
+  - `Access-Control-Allow-Headers`: `allow_headers` joined, or else the value of
+    `Access-Control-Request-Headers`, when that is present;
+  - `Access-Control-Max-Age`;
+  - `Access-Control-Allow-Private-Network`.
+- Any other request gets the response, followed by `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Credentials` and `Access-Control-Expose-Headers`.
+
+A request without `Origin`, or whose `Origin` matches no entry, gets the response with no
+`Access-Control-` header from `cors`.
+
+The answer is `HTTP/1.1 <status> <reason>`, then the headers in order, then any from
+`cors`, then `Content-Length` and `Connection: close`, then the body. The answer to `HEAD`
+has no body. Outpost adds no other header.
+
+The answer (also each item of the list below):
+
+```json
+{
+  "response_id": "r4f7k2m9q1x8c3v6",
+  "token": "x1",
+  "path": "/d.dtd",
+  "status": 200,
+  "headers": [["Content-Type", "application/xml-dtd"], ["Cache-Control", "no-store"]],
+  "cors": null,
+  "body_size": 112,
+  "body_sha256": "<64 hex characters>",
+  "created_at": "2026-11-11T08:15:30.123Z",
+  "expires_at": "2026-11-11T09:15:30.123Z"
+}
+```
+
+### `GET /v1/channels/{channel_id}/responses`
+
+Bearer: the channel secret. `200 {"responses": [...]}`: the unexpired responses, oldest
+first, without bodies.
+
+### `DELETE /v1/channels/{channel_id}/responses/{response_id}`
+
+Bearer: the channel secret. `204`; the response stops answering at once.
+`404 response_not_found` for an unknown, expired or deleted id.
+
+### What the host holds
+
+A response, with its token, path, headers and body, is stored as sent, not sealed: it is
+served to anyone who asks for it. It is deleted at `expires_at` (by the next retention
+pass at the latest), when it is replaced, or with its channel. Logs carry the channel id,
+response id, body size and body SHA-256, never the body.
