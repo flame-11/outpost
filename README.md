@@ -59,7 +59,8 @@ and Claude Desktop, and `skills/outpost/SKILL.md` is the skill that goes with it
 1. Delegate a zone to the host. For a subdomain of a domain you control, add to that domain:
    `A ns1.<zone> → <host address>` and `NS <zone> → ns1.<zone>`. For a whole domain, set glue
    records and name servers at the registrar. Outpost answers `MX` for every name in the zone
-   with `mx.<zone>`.
+   with `mx.<zone>`, and `TXT` with `v=spf1 -all` (and `v=DMARC1; p=reject` at `_dmarc.<name>`),
+   since nothing in the zone sends mail.
 2. Open 53/udp, 53/tcp and 80/tcp to everyone, plus 443/tcp with TLS on and 25/tcp with mail
    on. Open the API port only to the addresses your clients call from, or keep it private and
    reach it through a tunnel.

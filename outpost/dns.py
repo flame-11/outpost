@@ -27,6 +27,8 @@ log = logging.getLogger("outpost.dns")
 
 TTL = 60
 CHALLENGE_TTL = 0  # a validator must never see an earlier value
+SPF_TEXT = "v=spf1 -all"  # no host in the zone sends mail
+DMARC_TEXT = "v=DMARC1; p=reject"
 TCP_IDLE_SECONDS = 10.0
 CHALLENGE_POLL_SECONDS = 1.0
 
@@ -107,10 +109,22 @@ class DnsResponder:
             if values:
                 rdatas = [TXT(dns.rdataclass.IN, dns.rdatatype.TXT, [value.encode()]) for value in values]
                 rrset = dns.rrset.from_rdata_list(qname, CHALLENGE_TTL, rdatas)
+        elif rdtype == dns.rdatatype.TXT:
+            text = self._policy_text(qname)
+            if text is not None:
+                rdata = TXT(dns.rdataclass.IN, dns.rdatatype.TXT, [text.encode()])
+                rrset = dns.rrset.from_rdata_list(qname, TTL, [rdata])
         if rrset is not None:
             response.answer.append(rrset)
         else:
             response.authority.append(dns.rrset.from_text(self._zone, TTL, "IN", "SOA", self._soa_text))
+
+    def _policy_text(self, qname: dns.name.Name) -> str | None:
+        """SPF on every name without an underscore label; DMARC at `_dmarc.` followed by such a name."""
+        labels = [label.decode("ascii", "replace").lower() for label in qname.relativize(self._zone).labels]
+        if labels and labels[0] == "_dmarc":
+            return DMARC_TEXT if not any(label.startswith("_") for label in labels[1:]) else None
+        return SPF_TEXT if not any(label.startswith("_") for label in labels) else None
 
     def _capture(self, qname: dns.name.Name, rdtype: int, source_ip: str, source_port: int, transport: str) -> None:
         address = address_from_dns(qname, self._zone)

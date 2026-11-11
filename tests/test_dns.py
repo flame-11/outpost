@@ -77,10 +77,45 @@ async def test_acme_challenge_txt_has_no_values_without_certificate_component(st
 
 
 async def test_other_types_are_no_data_with_soa(stack: Stack) -> None:
-    for rdtype in ("TXT", "CAA", "SRV", "ANY", 65280):
+    for rdtype in ("CAA", "SRV", "ANY", 65280):
         response = ask(stack, f"x.{ZONE}", rdtype)
         assert response.rcode() == dns.rcode.NOERROR
         assert response.answer == []
+        assert soa_in_authority(response)
+
+
+def txt_strings(response: dns.message.Message) -> list[bytes]:
+    return [b"".join(rdata.strings) for rrset in response.answer for rdata in rrset]
+
+
+async def test_every_ordinary_name_says_it_sends_no_mail(stack: Stack) -> None:
+    for name in (ZONE, f"t1-aaaaaaaaaaaa.{ZONE}", f"uid0.t1-aaaaaaaaaaaa.{ZONE}", f"x.{ZONE}", f"MX.{ZONE.upper()}"):
+        response = ask(stack, name, "TXT")
+        assert response.rcode() == dns.rcode.NOERROR
+        assert response.flags & dns.flags.AA
+        assert txt_strings(response) == [b"v=spf1 -all"], name
+        assert response.answer[0].ttl == 60
+
+
+async def test_dmarc_names_ask_receivers_to_reject_mail_claiming_the_zone(stack: Stack) -> None:
+    for name in (f"_dmarc.{ZONE}", f"_dmarc.t1-aaaaaaaaaaaa.{ZONE}", f"_DMARC.uid0.t1-aaaaaaaaaaaa.{ZONE}"):
+        response = ask(stack, name, "TXT")
+        assert response.flags & dns.flags.AA
+        assert txt_strings(response) == [b"v=DMARC1; p=reject"], name
+        assert response.answer[0].ttl == 60
+
+
+async def test_other_underscore_names_have_no_txt(stack: Stack) -> None:
+    for name in (
+        f"_mta-sts.t1-aaaaaaaaaaaa.{ZONE}",
+        f"x._dmarc.{ZONE}",
+        f"_dmarc._x.{ZONE}",
+        f"sel._domainkey.{ZONE}",
+        f"x._acme-challenge.{ZONE}",
+    ):
+        response = ask(stack, name, "TXT")
+        assert response.rcode() == dns.rcode.NOERROR
+        assert response.answer == [], name
         assert soa_in_authority(response)
 
 

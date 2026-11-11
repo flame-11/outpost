@@ -48,6 +48,8 @@ Name server (UDP and TCP, authoritative, no recursion):
 | `MX`, any name in the zone | `10 mx.<zone>`, TTL 60 |
 | `NS`, `SOA` at the zone | `ns1.<zone>`, `ns2.<zone>` and the zone's SOA |
 | `TXT` at `_acme-challenge.<zone>` | the current certificate challenge values |
+| `TXT`, any name in the zone without a label that starts with `_` | `v=spf1 -all`, TTL 60: no host here sends mail |
+| `TXT` at `_dmarc.<name>`, `<name>` as in the row above | `v=DMARC1; p=reject`, TTL 60 |
 | any other type in the zone | no data, with the SOA |
 | a name outside the zone | `REFUSED` |
 
