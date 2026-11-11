@@ -38,7 +38,7 @@ from outpost.sealing import new_key_pair, open_sealed, seal
 )
 def test_example_validates_and_round_trips(file: str, model: type[HealthAnswer]) -> None:
     data = example(file)
-    assert model.model_validate_json(json.dumps(data)).model_dump() == data
+    assert model.model_validate_json(json.dumps(data)).model_dump(exclude_unset=True) == data
 
 
 def test_error_examples_validate() -> None:

@@ -56,6 +56,7 @@ async def test_registration_answer_and_idempotent_repeat(stack: Stack) -> None:
     assert answer["zone"] == ZONE
     assert answer["listeners"] == ["dns", "http"]
     assert answer["retention_days"] == 90
+    assert (answer["source_rate"], answer["channel_rate"]) == (60, 600)
     assert len(answer["channel_id"]) == 12 and set(answer["channel_id"]) <= set("abcdefghijklmnopqrstuvwxyz234567")
     repeat = await stack.client.post("/v1/channels", json=body, headers=API_AUTH)
     assert repeat.status_code == 200
@@ -102,6 +103,8 @@ async def test_channel_answer(stack: Stack) -> None:
         "zone": ZONE,
         "listeners": ["dns", "http"],
         "retention_days": 90,
+        "source_rate": 60,
+        "channel_rate": 600,
         "last_seq": 2,
         "held_records": 2,
         "dropped_total": 0,
@@ -239,3 +242,66 @@ async def test_storage_failure_is_503(stack: Stack, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(stack.db, "page", failing_page)
     response = await stack.client.get(f"/v1/channels/{channel.channel_id}/records", headers=channel.auth)
     assert_error(response, 503, "storage_unavailable")
+
+
+async def test_delete_removes_the_channel_and_its_records(stack: Stack) -> None:
+    channel, other = await stack.register(), await stack.register()
+    await put(stack, channel, 3)
+    path = f"/v1/channels/{channel.channel_id}"
+    assert_error(await stack.client.delete(path), 401, "unauthorized")
+    assert_error(await stack.client.delete(path, headers=other.auth), 401, "unauthorized")
+    assert_error(await stack.client.delete(path, headers=API_AUTH), 401, "unauthorized")
+    response = await stack.client.delete(path, headers=channel.auth)
+    assert response.status_code == 204
+    assert response.content == b""
+    for later in (
+        await stack.client.get(path, headers=channel.auth),
+        await stack.client.get(f"{path}/records", headers=channel.auth),
+        await stack.client.delete(path, headers=channel.auth),
+    ):
+        assert_error(later, 404, "channel_not_found")
+    connection = sqlite3.connect(stack.settings.data_dir / "outpost.sqlite3")
+    (held,) = connection.execute("SELECT COUNT(*) FROM records WHERE channel_id = ?", (channel.channel_id,)).fetchone()
+    connection.close()
+    assert held == 0
+    assert (await stack.client.get(f"/v1/channels/{other.channel_id}", headers=other.auth)).status_code == 200
+    stack.recorder.submit(capture_for(channel))  # a late interaction for the deleted channel is not stored
+    await stack.recorder.idle()
+
+
+async def test_delete_ends_a_waiting_pull(stack: Stack) -> None:
+    channel = await stack.register()
+    pull = asyncio.create_task(
+        stack.client.get(f"/v1/channels/{channel.channel_id}/records", params={"wait": 10}, headers=channel.auth)
+    )
+    await asyncio.sleep(0.3)
+    assert (await stack.client.delete(f"/v1/channels/{channel.channel_id}", headers=channel.auth)).status_code == 204
+    assert_error(await asyncio.wait_for(pull, timeout=5), 404, "channel_not_found")
+
+
+async def test_registration_retention_days(tmp_path: Path) -> None:
+    async with open_stack(tmp_path, retention_days=30) as stack:
+        response, channel = await stack.try_register(retention_days=7)
+        assert response.status_code == 201
+        assert response.json()["retention_days"] == 7
+        status = await stack.client.get(f"/v1/channels/{channel.channel_id}", headers=channel.auth)
+        assert status.json()["retention_days"] == 7
+        response, _ = await stack.try_register(retention_days=30)
+        assert response.json()["retention_days"] == 30
+        response, _ = await stack.try_register()
+        assert response.json()["retention_days"] == 30
+        for value in (31, 0, -1, "7", 1.5, True):
+            response, _ = await stack.try_register(retention_days=value)
+            assert "retention_days" in assert_error(response, 422, "invalid_request").error.message
+
+
+async def test_repeat_registration_keeps_or_changes_retention(tmp_path: Path) -> None:
+    async with open_stack(tmp_path, retention_days=30) as stack:
+        keys = new_key_pair()
+        body = registration_body(keys.public_key, "s")
+        first = await stack.client.post("/v1/channels", json={**body, "retention_days": 5}, headers=API_AUTH)
+        assert (first.status_code, first.json()["retention_days"]) == (201, 5)
+        repeat = await stack.client.post("/v1/channels", json=body, headers=API_AUTH)
+        assert (repeat.status_code, repeat.json()) == (200, first.json())
+        changed = await stack.client.post("/v1/channels", json={**body, "retention_days": 9}, headers=API_AUTH)
+        assert (changed.status_code, changed.json()["retention_days"]) == (200, 9)

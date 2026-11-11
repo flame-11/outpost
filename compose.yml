@@ -1,8 +1,13 @@
 # Public host. Host networking so records carry real source addresses and the name server answers on
 # the host's own address. Values come from a `.env` file next to this one (ignored by git):
-#   OUTPOST_ZONE, OUTPOST_PUBLIC_IPV4, OUTPOST_BIND_IP, OUTPOST_API_KEY_SHA256, optional OUTPOST_PUBLIC_IPV6.
-# OUTPOST_BIND_IP is the host's own interface address; the provider's firewall opens 53/udp, 53/tcp and 80/tcp
-# to everyone and the API port only to client addresses.
+#   required: OUTPOST_ZONE, OUTPOST_PUBLIC_IPV4, OUTPOST_BIND_IP
+#   OUTPOST_API_KEY_SHA256 (the bootstrap key `default`; optional once `outpost-admin key add` made a key)
+#   OUTPOST_TLS=acme|files|off, OUTPOST_ACME_EMAIL, OUTPOST_ACME_STAGING=true|false, OUTPOST_SMTP=on|off,
+#   OUTPOST_PUBLIC_IPV6, OUTPOST_API_PORT, OUTPOST_RETENTION_DAYS and the four limits.
+# OUTPOST_BIND_IP is the host's own interface address; the provider's firewall opens 53/udp, 53/tcp, 80/tcp,
+# 443/tcp (TLS on) and 25/tcp (mail on) to everyone and the API port only to client addresses.
+# With OUTPOST_TLS=files, put the certificate pair under /var/lib/outpost and give its /data/... paths.
+# Keys: `docker exec outpost outpost-admin key add NAME [--max-channels N] [--channel-rate N]`.
 name: outpost
 
 services:
@@ -12,23 +17,37 @@ services:
     container_name: outpost
     restart: unless-stopped
     network_mode: host
-    # Root inside the container only to bind ports 53 and 80 on the host network; every other capability dropped.
+    # Root inside the container only to bind ports 25, 53, 80 and 443 on the host network; every other
+    # capability dropped.
     user: "0:0"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     read_only: true
     security_opt: ["no-new-privileges:true"]
+    # certbot writes its config, work and log directories under /data/certs; /tmp is its scratch space.
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     environment:
       OUTPOST_ZONE: ${OUTPOST_ZONE:?}
       OUTPOST_PUBLIC_IPV4: ${OUTPOST_PUBLIC_IPV4:?}
       OUTPOST_PUBLIC_IPV6: ${OUTPOST_PUBLIC_IPV6:-}
       OUTPOST_BIND_IP: ${OUTPOST_BIND_IP:?}
-      OUTPOST_API_KEY_SHA256: ${OUTPOST_API_KEY_SHA256:?}
+      OUTPOST_API_KEY_SHA256: ${OUTPOST_API_KEY_SHA256:-}
       OUTPOST_RETENTION_DAYS: ${OUTPOST_RETENTION_DAYS:-90}
-      OUTPOST_TLS: "off"
-      OUTPOST_SMTP: "off"
+      OUTPOST_SOURCE_RATE: ${OUTPOST_SOURCE_RATE:-60}
+      OUTPOST_CHANNEL_RATE: ${OUTPOST_CHANNEL_RATE:-600}
+      OUTPOST_CHANNEL_MAX_RECORDS: ${OUTPOST_CHANNEL_MAX_RECORDS:-50000}
+      OUTPOST_CHANNEL_MAX_BYTES: ${OUTPOST_CHANNEL_MAX_BYTES:-268435456}
+      OUTPOST_TLS: ${OUTPOST_TLS:-off}
+      OUTPOST_ACME_EMAIL: ${OUTPOST_ACME_EMAIL:-}
+      OUTPOST_ACME_STAGING: ${OUTPOST_ACME_STAGING:-false}
+      OUTPOST_TLS_CERT: ${OUTPOST_TLS_CERT:-}
+      OUTPOST_TLS_KEY: ${OUTPOST_TLS_KEY:-}
+      OUTPOST_SMTP: ${OUTPOST_SMTP:-off}
       OUTPOST_DNS_PORT: "53"
       OUTPOST_HTTP_PORT: "80"
+      OUTPOST_HTTPS_PORT: "443"
+      OUTPOST_SMTP_PORT: "25"
       OUTPOST_API_PORT: ${OUTPOST_API_PORT:-9443}
       OUTPOST_DATA_DIR: /data
     volumes:

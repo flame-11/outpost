@@ -1,215 +1,223 @@
-"""The client CLI: `outpost channel create`, `outpost list`, `outpost read`.
+"""The `outpost` command: channel create|status|delete, list, read, watch, assemble, and `mcp`.
 
-The key file holds the API address, the channel id, the X25519 private key and the channel
-secret. It is written (mode 0600) before registration, so a repeat after an uncertain answer
-registers the same key and secret again and gets the same channel back.
+A channel's key file is named by `--channel LABEL` (`$OUTPOST_HOME/channels/LABEL.json`, label
+`default` when neither option is given) or given as a path with `--key-file`.
 """
 
 import argparse
-import base64
-import hashlib
+import asyncio
 import json
 import os
-import secrets
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Coroutine, Sequence
+from contextlib import aclosing
 from pathlib import Path
+from typing import Any, TextIO
 
 import httpx
-from nacl.exceptions import CryptoError
-from nacl.public import PrivateKey
-from pydantic import ValidationError
 
-from outpost.models import ChannelAnswer, ErrorBody, RecordsPage, RegistrationAnswer, SealedRecord
-from outpost.records import OPENED_RECORD, ChannelId, DnsRecord, HttpRecord, StrictModel
-from outpost.sealing import open_sealed
+from outpost.assemble import assemble
+from outpost.client import (
+    KeyFile,
+    OutpostError,
+    SealedRecord,
+    channel_state,
+    check_token,
+    delete_channel,
+    fetch_record,
+    key_file_path,
+    load_key_file,
+    new_http_client,
+    open_record,
+    pull,
+    register,
+)
+from outpost.records import DnsRecord
+from outpost.views import detail
 
-HTTP_TIMEOUT_SECONDS = 10.0
-
-
-class CliError(Exception):
-    pass
-
-
-class KeyFile(StrictModel):
-    api: str
-    channel_id: ChannelId | None
-    zone: str | None
-    private_key: str
-    secret: str
-
-    def private_key_bytes(self) -> bytes:
-        return base64.b64decode(self.private_key)
+Handler = Callable[[argparse.Namespace, httpx.AsyncClient], Coroutine[Any, Any, None]]
 
 
-def _load_key_file(path: Path) -> KeyFile:
-    try:
-        return KeyFile.model_validate_json(path.read_bytes())
-    except (OSError, ValidationError) as exc:
-        raise CliError(f"cannot read key file {path}: {exc}") from exc
+def _path(args: argparse.Namespace) -> Path:
+    return Path(args.key_file) if args.key_file else key_file_path(args.channel)
 
 
-def _save_key_file(path: Path, key_file: KeyFile) -> None:
-    temporary = path.with_name(path.name + ".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(key_file.model_dump_json(indent=2) + "\n")
-    os.replace(temporary, path)
+def _key_file(args: argparse.Namespace) -> KeyFile:
+    return load_key_file(_path(args))
 
 
-def _raise_for_error(response: httpx.Response) -> None:
-    if response.status_code < 400:
-        return
-    try:
-        error = ErrorBody.model_validate_json(response.content).error
-        detail = f"{error.code}: {error.message}"
-    except ValidationError:
-        detail = response.text[:200]
-    raise CliError(f"HTTP {response.status_code} {detail}")
-
-
-def create_channel(api: str, api_key: str, key_path: Path, client: httpx.Client) -> KeyFile:
-    if key_path.exists():
-        key_file = _load_key_file(key_path).model_copy(update={"api": api})
-    else:
-        key_file = KeyFile(
-            api=api,
-            channel_id=None,
-            zone=None,
-            private_key=base64.b64encode(bytes(PrivateKey.generate())).decode("ascii"),
-            secret=secrets.token_hex(32),
-        )
-        _save_key_file(key_path, key_file)
-    public_key = bytes(PrivateKey(key_file.private_key_bytes()).public_key)
-    response = client.post(
-        f"{api.rstrip('/')}/v1/channels",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "public_key": base64.b64encode(public_key).decode("ascii"),
-            "secret_sha256": hashlib.sha256(key_file.secret.encode()).hexdigest(),
-        },
-    )
-    _raise_for_error(response)
-    answer = RegistrationAnswer.model_validate_json(response.content)
-    key_file = key_file.model_copy(update={"channel_id": answer.channel_id, "zone": answer.zone})
-    _save_key_file(key_path, key_file)
-    return key_file
-
-
-def channel_status(key_file: KeyFile, client: httpx.Client) -> ChannelAnswer:
-    response = client.get(_channel_url(key_file), headers=_auth(key_file))
-    _raise_for_error(response)
-    return ChannelAnswer.model_validate_json(response.content)
-
-
-def pull(key_file: KeyFile, client: httpx.Client, *, after: int, wait: int) -> Iterator[SealedRecord]:
-    """Every held record past `after`, page by page; `wait` applies to the first page."""
-    while True:
-        response = client.get(
-            f"{_channel_url(key_file)}/records",
-            params={"after": after, "wait": wait},
-            headers=_auth(key_file),
-            timeout=HTTP_TIMEOUT_SECONDS + wait,
-        )
-        _raise_for_error(response)
-        page = RecordsPage.model_validate_json(response.content)
-        yield from page.records
-        if not page.more or not page.records:
-            return
-        after = page.records[-1].seq
-        wait = 0
-
-
-def open_record(key_file: KeyFile, record: SealedRecord) -> DnsRecord | HttpRecord:
-    """Raises CryptoError or ValidationError when the record does not open or validate."""
-    plaintext = open_sealed(key_file.private_key_bytes(), base64.b64decode(record.sealed))
-    opened = OPENED_RECORD.validate_json(plaintext)
-    if opened.received_at != record.received_at:
-        raise ValueError("received_at inside the box differs from the one outside")
-    return opened
-
-
-def _channel_url(key_file: KeyFile) -> str:
-    if key_file.channel_id is None:
-        raise CliError("the key file holds no channel id; run `outpost channel create` again")
-    return f"{key_file.api.rstrip('/')}/v1/channels/{key_file.channel_id}"
-
-
-def _auth(key_file: KeyFile) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key_file.secret}"}
-
-
-def _cmd_create(args: argparse.Namespace, client: httpx.Client) -> None:
-    key_file = create_channel(args.api, args.api_key, Path(args.key_file), client)
+async def _create(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    if not args.api or not args.api_key:
+        raise OutpostError("invalid_request", "give --api and --api-key, or set OUTPOST_API_URL and OUTPOST_API_KEY")
+    path = _path(args)
+    key_file, answer = await register(http, args.api, args.api_key, path, retention_days=args.retention_days)
     print(f"channel_id\t{key_file.channel_id}")
-    print(f"zone\t{key_file.zone}")
-    print(f"address\t{{token}}-{key_file.channel_id}.{key_file.zone}")
-    print(f"key_file\t{args.key_file}")
+    print(f"zone\t{answer.zone}")
+    print(f"address\t{{token}}-{key_file.channel_id}.{answer.zone}")
+    print(f"listeners\t{','.join(answer.listeners)}")
+    print(f"retention_days\t{answer.retention_days}")
+    for name in ("source_rate", "channel_rate"):
+        if (value := getattr(answer, name)) is not None:
+            print(f"{name}\t{value}")
+    print(f"key_file\t{path}")
 
 
-def _cmd_list(args: argparse.Namespace, client: httpx.Client) -> None:
-    key_file = _load_key_file(Path(args.key_file))
-    for record in pull(key_file, client, after=args.after, wait=args.wait):
-        try:
-            opened = open_record(key_file, record)
-        except (CryptoError, ValueError):
-            print(f"{record.seq}\tunreadable\t\t\t\t{record.received_at}")
-            continue
-        print(
-            f"{record.seq}\t{opened.protocol}\t{opened.token}\t{opened.name}\t{opened.source_ip}\t{opened.received_at}"
-        )
+async def _status(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    state = await channel_state(http, _key_file(args))
+    for name, value in state.model_dump().items():
+        if value is not None:
+            print(f"{name}\t{','.join(value) if isinstance(value, list) else value}")
 
 
-def _cmd_read(args: argparse.Namespace, client: httpx.Client) -> None:
-    key_file = _load_key_file(Path(args.key_file))
-    records = pull(key_file, client, after=args.seq - 1, wait=0)
-    record = next(records, None)
-    if record is None or record.seq != args.seq:
-        raise CliError(f"record {args.seq} is not held")
+async def _delete(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    path = _path(args)
+    key_file = load_key_file(path)
+    try:
+        await delete_channel(http, key_file)
+    except OutpostError as exc:
+        if exc.server_code != "channel_not_found":
+            raise
+    path.unlink()
+    print(f"deleted\t{key_file.channel_id}")
+
+
+def _line(seq: int, key_file: KeyFile, record: SealedRecord, out: TextIO) -> None:
     try:
         opened = open_record(key_file, record)
-    except (CryptoError, ValueError) as exc:
-        raise CliError(f"record {args.seq} does not open or validate: {exc}") from exc
-    print(json.dumps(opened.model_dump(), indent=2))
+    except OutpostError:
+        print(f"{seq}\tunreadable\t\t\t\t{record.received_at}", file=out)
+        return
+    fields = (seq, opened.protocol, opened.token, opened.name, opened.source_ip, opened.received_at)
+    print("\t".join(map(str, fields)), file=out)
+
+
+async def _list(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    key_file = _key_file(args)
+    async for record in pull(http, key_file, after=args.after, wait=args.wait):
+        _line(record.seq, key_file, record, sys.stdout)
+
+
+async def _watch(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    key_file = _key_file(args)
+    after = args.after if args.after is not None else (await channel_state(http, key_file)).last_seq
+    shown = 0
+    while args.count is None or shown < args.count:
+        async with aclosing(pull(http, key_file, after=after, wait=25)) as records:
+            async for record in records:
+                _line(record.seq, key_file, record, sys.stdout)
+                sys.stdout.flush()
+                after, shown = record.seq, shown + 1
+                if args.count is not None and shown >= args.count:
+                    break
+
+
+async def _read(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    record = await fetch_record(http, _key_file(args), args.seq)
+    try:
+        shown = detail(args.seq, record, part=args.part)
+    except IndexError as exc:
+        raise OutpostError("invalid_request", str(exc)) from exc
+    print(json.dumps(shown, indent=2, ensure_ascii=False))
+
+
+async def _assemble(args: argparse.Namespace, http: httpx.AsyncClient) -> None:
+    key_file = _key_file(args)
+    token = check_token(args.token)
+    records: list[DnsRecord] = []
+    async for sealed in pull(http, key_file, limit=200):
+        try:
+            opened = open_record(key_file, sealed)
+        except OutpostError:
+            continue
+        if isinstance(opened, DnsRecord) and opened.token == token:
+            records.append(opened)
+    result = assemble(records, token, args.encoding)
+    if args.out:
+        Path(args.out).write_bytes(result.data)
+    else:
+        sys.stdout.buffer.write(result.data)
+        sys.stdout.flush()
+    print(
+        f"bytes\t{len(result.data)}\nchunks\t{len(result.present)}\n"
+        f"missing\t{','.join(map(str, result.missing))}\nundecodable\t{','.join(map(str, result.undecodable))}",
+        file=sys.stderr,
+    )
+
+
+def _channel_options(parser: argparse.ArgumentParser) -> None:
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument("--channel", default="default", help="channel label (default: default)")
+    choice.add_argument("--key-file", help="key file path, instead of a label")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="outpost", description="Outpost client")
     commands = parser.add_subparsers(dest="command", required=True)
-    channel = commands.add_parser("channel", help="channel commands")
+
+    channel = commands.add_parser("channel", help="create, show or delete a channel")
     channel_commands = channel.add_subparsers(dest="channel_command", required=True)
     create = channel_commands.add_parser("create", help="register a channel, keeping its keys in a key file")
-    create.add_argument("--api", required=True, help="API base address, e.g. http://127.0.0.1:9080")
-    create.add_argument("--api-key", required=True, help="the operator's API key")
-    create.add_argument("--key-file", required=True)
-    create.set_defaults(handler=_cmd_create)
-    listing = commands.add_parser("list", help="pull and print the channel's records, one line each")
-    listing.add_argument("--key-file", required=True)
-    listing.add_argument("--after", type=int, default=0)
-    listing.add_argument("--wait", type=int, default=0, help="seconds to wait for a first record")
-    listing.set_defaults(handler=_cmd_list)
-    read = commands.add_parser("read", help="print one opened record in full")
-    read.add_argument("--key-file", required=True)
+    create.add_argument("--api", default=os.environ.get("OUTPOST_API_URL"), help="API base address (OUTPOST_API_URL)")
+    create.add_argument("--api-key", default=os.environ.get("OUTPOST_API_KEY"), help="API key (OUTPOST_API_KEY)")
+    create.add_argument("--retention-days", type=int, help="days records are kept, up to the instance's limit")
+    _channel_options(create)
+    create.set_defaults(handler=_create)
+    status = channel_commands.add_parser("status", help="show the channel's state")
+    _channel_options(status)
+    status.set_defaults(handler=_status)
+    delete = channel_commands.add_parser("delete", help="delete the channel, its records and its key file")
+    _channel_options(delete)
+    delete.set_defaults(handler=_delete)
+
+    listing = commands.add_parser("list", help="print the channel's records, one line each")
+    _channel_options(listing)
+    listing.add_argument("--after", type=int, default=0, help="only records with a higher seq")
+    listing.add_argument("--wait", type=int, default=0, help="seconds to wait for a first record (at most 25)")
+    listing.set_defaults(handler=_list)
+
+    read = commands.add_parser("read", help="print one record in full, as JSON")
+    _channel_options(read)
     read.add_argument("seq", type=int)
-    read.set_defaults(handler=_cmd_read)
+    read.add_argument("--part", type=int, help="mail part to show (default: the first text part)")
+    read.set_defaults(handler=_read)
+
+    watch = commands.add_parser("watch", help="print records as they arrive, until interrupted")
+    _channel_options(watch)
+    watch.add_argument("--after", type=int, help="start past this seq (default: the newest record)")
+    watch.add_argument("--count", type=int, help="stop after this many records")
+    watch.set_defaults(handler=_watch)
+
+    assembled = commands.add_parser("assemble", help="reassemble data sent as indexed lookups of one token")
+    _channel_options(assembled)
+    assembled.add_argument("token")
+    assembled.add_argument("--encoding", choices=["hex", "base32"], required=True)
+    assembled.add_argument("--out", help="write the data to this file instead of standard output")
+    assembled.set_defaults(handler=_assemble)
+
+    mcp = commands.add_parser("mcp", help="run the MCP server on standard input and output")
+    mcp.set_defaults(handler=None)
     return parser
 
 
-def run_cli(argv: Sequence[str], client: httpx.Client | None = None) -> int:
+async def _run(handler: Handler, args: argparse.Namespace) -> None:
+    async with new_http_client() as http:
+        await handler(args, http)
+
+
+def run_cli(argv: Sequence[str]) -> int:
     args = _parser().parse_args(list(argv))
-    own_client = client is None
-    http_client = client or httpx.Client(timeout=HTTP_TIMEOUT_SECONDS, trust_env=False)
+    if args.handler is None:
+        from outpost.mcp_server import main as mcp_main
+
+        mcp_main()
+        return 0
     try:
-        args.handler(args, http_client)
-    except CliError as exc:
+        asyncio.run(_run(args.handler, args))
+    except OutpostError as exc:
         print(f"outpost: {exc}", file=sys.stderr)
         return 1
-    except httpx.HTTPError as exc:
-        print(f"outpost: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    finally:
-        if own_client:
-            http_client.close()
+    except KeyboardInterrupt:
+        return 130
     return 0
 
 

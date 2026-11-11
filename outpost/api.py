@@ -8,15 +8,16 @@ import logging
 import math
 import sqlite3
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from outpost.addresses import CHANNEL_ID
 from outpost.config import Limits, Settings
+from outpost.keys import ApiKey, bootstrap_key
 from outpost.models import (
     ChannelAnswer,
     ErrorBody,
@@ -32,7 +33,7 @@ from outpost.models import (
 from outpost.rates import RateWindow
 from outpost.recorder import Notifier
 from outpost.records import utc_now
-from outpost.store import ChannelConflict, Database, Page
+from outpost.store import ChannelConflict, Database, Page, QuotaExceeded
 
 log = logging.getLogger("outpost.api")
 
@@ -97,11 +98,13 @@ def create_app(ctx: ApiContext) -> FastAPI:
 
     def _authenticate(request: Request, stored_sha256: str | None) -> None:
         """Constant-time check of the bearer value against a stored SHA-256; counts failures."""
-        source = request.client.host if request.client else ""
         value = _bearer(request)
         if value is not None and stored_sha256 is not None and hmac.compare_digest(_sha256_hex(value), stored_sha256):
             return
-        auth_failures.add(source)
+        _refuse(request)
+
+    def _refuse(request: Request) -> NoReturn:
+        auth_failures.add(request.client.host if request.client else "")
         raise ApiError(401, "unauthorized", "missing or wrong bearer value")
 
     def _rate_gate(request: Request) -> None:
@@ -110,9 +113,19 @@ def create_app(ctx: ApiContext) -> FastAPI:
             retry = max(1, math.ceil(auth_failures.seconds_until_allowed(source)))
             raise ApiError(429, "rate_limited", "too many failed authentications", {"Retry-After": str(retry)})
 
-    async def api_key(request: Request) -> None:
+    async def api_key(request: Request) -> ApiKey:
+        """The bootstrap key (OUTPOST_API_KEY_SHA256) or an unrevoked named key from the store."""
         _rate_gate(request)
-        _authenticate(request, settings.api_key_sha256)
+        value = _bearer(request)
+        if value is None:
+            _refuse(request)
+        digest = _sha256_hex(value or "")
+        if settings.api_key_sha256 is not None and hmac.compare_digest(digest, settings.api_key_sha256):
+            return bootstrap_key()
+        key = await db.api_key(digest)
+        if key is None or key.revoked:
+            _refuse(request)
+        return key
 
     async def channel(request: Request, channel_id: str) -> str:
         _rate_gate(request)
@@ -125,6 +138,9 @@ def create_app(ctx: ApiContext) -> FastAPI:
         await db.touch(channel_id, utc_now())
         return channel_id
 
+    def _retention(asked: int | None) -> int:
+        return settings.retention_days if asked is None else min(asked, settings.retention_days)
+
     @app.get("/v1/health")
     async def health() -> HealthAnswer:
         return HealthAnswer(status="ok", contract=1, store_full=await db.store_full())
@@ -134,20 +150,29 @@ def create_app(ctx: ApiContext) -> FastAPI:
         status_code=201,
         response_model=RegistrationAnswer,
         responses={200: {"model": RegistrationAnswer, "description": "already registered with this secret"}},
-        dependencies=[Depends(api_key)],
     )
-    async def register(body: RegistrationRequest) -> JSONResponse:
+    async def register(body: RegistrationRequest, key: Annotated[ApiKey, Depends(api_key)]) -> JSONResponse:
+        if body.retention_days is not None and body.retention_days > settings.retention_days:
+            raise ApiError(
+                422, "invalid_request", f"retention_days: must be at most {settings.retention_days} on this instance"
+            )
         try:
-            registration = await db.register(decode_public_key(body.public_key), body.secret_sha256.lower(), utc_now())
+            registration = await db.register(
+                decode_public_key(body.public_key), body.secret_sha256.lower(), utc_now(), key, body.retention_days
+            )
         except ChannelConflict as exc:
             raise ApiError(409, "channel_conflict", "this public_key is registered with another secret") from exc
+        except QuotaExceeded as exc:
+            raise ApiError(429, "quota_exceeded", "this API key holds its maximum number of channels") from exc
         if registration.created:
             log.info("channel registered: %s", registration.channel_id)
         answer = RegistrationAnswer(
             channel_id=registration.channel_id,
             zone=settings.zone,
             listeners=list(settings.listeners),
-            retention_days=settings.retention_days,
+            retention_days=_retention(registration.retention_days),
+            source_rate=limits.source_rate,
+            channel_rate=limits.channel_rate_for(registration.key_channel_rate),
         )
         return JSONResponse(status_code=201 if registration.created else 200, content=answer.model_dump())
 
@@ -160,11 +185,21 @@ def create_app(ctx: ApiContext) -> FastAPI:
             channel_id=channel_id,
             zone=settings.zone,
             listeners=list(settings.listeners),
-            retention_days=settings.retention_days,
+            retention_days=_retention(status.retention_days),
+            source_rate=limits.source_rate,
+            channel_rate=limits.channel_rate_for(status.key_channel_rate),
             last_seq=status.last_seq,
             held_records=status.held_records,
             dropped_total=status.dropped_total,
         )
+
+    @app.delete("/v1/channels/{channel_id}", status_code=204, response_class=Response)
+    async def delete_channel(channel_id: Annotated[str, Depends(channel)]) -> Response:
+        if not await db.delete_channel(channel_id):
+            raise ApiError(404, "channel_not_found", f"no channel {channel_id}")
+        ctx.notifier.stored(channel_id)  # a pull waiting on it answers channel_not_found
+        log.info("channel deleted: %s", channel_id)
+        return Response(status_code=204)
 
     @app.get("/v1/channels/{channel_id}/records")
     async def records(

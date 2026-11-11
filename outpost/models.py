@@ -15,9 +15,11 @@ ErrorCode = Literal[
     "channel_conflict",
     "invalid_request",
     "rate_limited",
+    "quota_exceeded",
     "storage_unavailable",
 ]
 Count = Annotated[int, Field(ge=0)]
+Rate = Annotated[int, Field(ge=1)]
 
 
 def decode_public_key(value: str) -> bytes:
@@ -40,6 +42,7 @@ class HealthAnswer(StrictModel):
 class RegistrationRequest(StrictModel):
     public_key: str
     secret_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{64}$")]
+    retention_days: Annotated[int, Field(ge=1)] | None = None  # capped at the instance's
 
     @field_validator("public_key")
     @classmethod
@@ -53,6 +56,8 @@ class RegistrationAnswer(StrictModel):
     zone: str
     listeners: list[Listener]
     retention_days: Count
+    source_rate: Rate  # stored records a minute, per source address
+    channel_rate: Rate  # stored records a minute, for the channel
 
 
 class ChannelAnswer(StrictModel):
@@ -60,6 +65,8 @@ class ChannelAnswer(StrictModel):
     zone: str
     listeners: list[Listener]
     retention_days: Count
+    source_rate: Rate
+    channel_rate: Rate
     last_seq: Count
     held_records: Count
     dropped_total: Count

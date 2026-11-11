@@ -1,0 +1,24 @@
+{
+  "name": "outpost",
+  "displayName": "Outpost",
+  "version": "1.0.0",
+  "description": "Callback addresses that record DNS lookups, web requests and mail, read on your machine",
+  "author": { "name": "Outpost" },
+  "license": "MIT",
+  "keywords": ["callback", "dns", "out-of-band"],
+  "userConfig": {
+    "api_url": {
+      "type": "string",
+      "title": "Outpost API address",
+      "description": "Base address of your Outpost instance's API, for example http://127.0.0.1:9080",
+      "required": true
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Outpost API key",
+      "description": "The instance's API key, used to create channels",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}

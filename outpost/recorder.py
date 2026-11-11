@@ -25,6 +25,14 @@ class Capture:
     plaintext: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class Drop:
+    """One interaction that named a channel and was refused before a record was built (a message
+    over MAIL_MAX_BYTES); it counts in `dropped_total`."""
+
+    channel_id: str
+
+
 class Notifier:
     """Wakes pulls waiting on a channel when a record is stored for it."""
 
@@ -45,7 +53,8 @@ class Recorder:
     def __init__(self, db: Database, limits: Limits, notifier: Notifier) -> None:
         self._db = db
         self._notifier = notifier
-        self._queue: asyncio.Queue[Capture] = asyncio.Queue(QUEUE_SIZE)
+        self._limits = limits
+        self._queue: asyncio.Queue[Capture | Drop] = asyncio.Queue(QUEUE_SIZE)
         self._source_rate = RateWindow(limits.source_rate, 60.0)
         self._channel_rate = RateWindow(limits.channel_rate, 60.0)
         self._pending_drops: Counter[str] = Counter()
@@ -54,7 +63,7 @@ class Recorder:
         """Listeners ask first, so an interaction for an unknown channel builds no record."""
         return self._db.knows(channel_id)
 
-    def submit(self, capture: Capture) -> None:
+    def submit(self, capture: Capture | Drop) -> None:
         """Called by the listeners; never blocks."""
         try:
             self._queue.put_nowait(capture)
@@ -69,7 +78,10 @@ class Recorder:
         while True:
             capture = await self._queue.get()
             try:
-                await self._record(capture)
+                if isinstance(capture, Drop):
+                    self._pending_drops[capture.channel_id] += 1
+                else:
+                    await self._record(capture)
                 if self._pending_drops and (
                     self._queue.empty() or self._pending_drops.total() >= _DROP_FLUSH_THRESHOLD
                 ):
@@ -79,7 +91,10 @@ class Recorder:
 
     async def _record(self, capture: Capture) -> None:
         source_key = (capture.source_ip, capture.channel_id)
-        if not (self._source_rate.allows(source_key) and self._channel_rate.allows(capture.channel_id)):
+        channel_rate = self._limits.channel_rate_for(self._db.key_channel_rate(capture.channel_id))
+        if not (
+            self._source_rate.allows(source_key) and self._channel_rate.allows(capture.channel_id, limit=channel_rate)
+        ):
             self._pending_drops[capture.channel_id] += 1
             return
         outcome = await self._db.insert(capture.channel_id, capture.received_at, capture.plaintext)

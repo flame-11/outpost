@@ -70,3 +70,29 @@ async def test_dropped_lookup_still_gets_its_answer(tmp_path: Path) -> None:
         await stack.recorder.idle()
         status = await channel_status(stack, channel.channel_id, channel.auth)
         assert (status["held_records"], status["dropped_total"]) == (0, 1)
+
+
+async def test_answers_report_the_configured_rates(tmp_path: Path) -> None:
+    limits = Limits.from_env({"OUTPOST_SOURCE_RATE": "7", "OUTPOST_CHANNEL_RATE": "70"})
+    async with open_stack(tmp_path, limits) as stack:
+        response, channel = await stack.try_register()
+        assert response.status_code == 201
+        assert (response.json()["source_rate"], response.json()["channel_rate"]) == (7, 70)
+        status = await channel_status(stack, channel.channel_id, channel.auth)
+        assert (status["source_rate"], status["channel_rate"]) == (7, 70)
+
+
+async def test_max_records_and_bytes_from_env_apply(tmp_path: Path) -> None:
+    limits = Limits.from_env({"OUTPOST_CHANNEL_MAX_RECORDS": "2", "OUTPOST_SOURCE_RATE": "100"})
+    async with open_stack(tmp_path, limits) as stack:
+        channel = await stack.register()
+        await put(stack, channel, 3)
+        status = await channel_status(stack, channel.channel_id, channel.auth)
+        assert (status["held_records"], status["dropped_total"]) == (2, 1)
+    limits = Limits.from_env({"OUTPOST_CHANNEL_MAX_BYTES": "3000"})
+    async with open_stack(tmp_path / "bytes", limits) as stack:
+        channel = await stack.register()
+        await put(stack, channel, 5, raw=b"x" * 600)
+        status = await channel_status(stack, channel.channel_id, channel.auth)
+        assert 1 <= status["held_records"] < 5
+        assert status["dropped_total"] == 5 - status["held_records"]

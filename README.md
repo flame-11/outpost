@@ -1,14 +1,15 @@
 # Outpost
 
-Outpost is a public callback catcher. It is the authoritative name server for one DNS zone
-and runs a plain web listener. Lookups and web requests that reach a channel's addresses are
-recorded. Each record is sealed to the channel's public key before it is written, and clients
-pull the records through an HTTP API. Outpost serves no content, sends no mail and does no
-recursion.
+Outpost is a public callback catcher for out-of-band testing. It is the authoritative name
+server for one DNS zone and runs web (HTTP and HTTPS) and mail listeners. Lookups, web
+requests and mail that reach a channel's addresses are recorded. Each record is sealed to the
+channel's public key before it is written, so the public host holds nothing readable; clients
+pull the records through an HTTP API and open them locally. Outpost serves no content, sends
+or relays no mail and does no recursion.
 
-This version runs the name server (UDP and TCP) and the web listener on port 80. It has no
-TLS listener, no certificate component and no mail receiver, so `OUTPOST_TLS` and
-`OUTPOST_SMTP` accept only `off`.
+The `outpost` client is a command line tool, a Python library and a local MCP server, so
+agents such as Claude Code, Codex CLI and Claude Desktop can hand out addresses and read what
+arrived.
 
 ## Addresses
 
@@ -18,52 +19,82 @@ TLS listener, no certificate component and no mail receiver, so `OUTPOST_TLS` an
 
 `token` is 1 to 20 of `a-z0-9`. `channel_id` is 12 of `a-z2-7`, drawn by Outpost. The pair is
 read from the label immediately left of the zone. A web request's pair comes from its `Host`
-header. An interaction is stored only when its pair names an existing channel. Every other
+header (for HTTPS, else from the TLS server name); a mail recipient's from the domain after
+`@`. An interaction is stored only when its pair names an existing channel. Every other
 interaction gets the same answer and is not stored.
+
+Data longer than one name can be sent over many lookups and joined by the client
+(`outpost assemble`, `outpost_assemble`); `docs/API.md` section 8 gives the name layout.
+
+## Use it
+
+Install the client with [uv](https://docs.astral.sh/uv/) (`uv tool install outpost-oob`) or
+run it with `uvx --from outpost-oob outpost`. It reads `OUTPOST_API_URL` and `OUTPOST_API_KEY`,
+and keeps one key file per channel under `OUTPOST_HOME` (default `~/.config/outpost`,
+`channels/<label>.json`, mode 0600). The key file holds the API address, the channel id, the
+X25519 private key and the channel secret.
+
+```bash
+outpost channel create [--channel LABEL] [--retention-days N]
+outpost channel status
+outpost list [--after N] [--wait S]
+outpost read SEQ [--part N]
+outpost watch
+outpost assemble TOKEN --encoding hex|base32 [--out FILE]
+outpost channel delete
+```
+
+`--channel LABEL` (default `default`) or `--key-file PATH` picks the channel.
+
+### Agents
+
+`outpost mcp` runs a stdio MCP server with four tools: `outpost_addresses` (creates the channel
+on first use and shows its names, URLs, mail address and rates), `outpost_list`,
+`outpost_read` and `outpost_assemble`. Records are opened by this local process.
+`integrations/README.md` has ready configuration for Claude Code (command or plugin), Codex CLI
+and Claude Desktop, and `skills/outpost/SKILL.md` is the skill that goes with it.
 
 ## Run on a public host
 
 1. Delegate a zone to the host. For a subdomain of a domain you control, add to that domain:
    `A ns1.<zone> → <host address>` and `NS <zone> → ns1.<zone>`. For a whole domain, set glue
-   records and name servers at the registrar.
-2. Open 53/udp, 53/tcp and 80/tcp to everyone. Open the API port only to the addresses your
-   clients call from, or keep it private and reach it through a tunnel.
+   records and name servers at the registrar. Outpost answers `MX` for every name in the zone
+   with `mx.<zone>`.
+2. Open 53/udp, 53/tcp and 80/tcp to everyone, plus 443/tcp with TLS on and 25/tcp with mail
+   on. Open the API port only to the addresses your clients call from, or keep it private and
+   reach it through a tunnel.
 3. Next to `compose.yml`, write a `.env` with `OUTPOST_ZONE`, `OUTPOST_PUBLIC_IPV4` (the
-   address the zone's names should resolve to), `OUTPOST_BIND_IP` (the host's own interface
-   address), `OUTPOST_API_KEY_SHA256` and, if wanted, `OUTPOST_API_PORT`.
+   address the zone's names resolve to), `OUTPOST_BIND_IP` (the host's own interface address)
+   and the settings below you want.
 4. `sudo install -d -m 700 /var/lib/outpost && sudo docker compose up -d --build`
 
 `compose.yml` uses host networking, so records carry the real source addresses. The container
 keeps only the capability to bind ports below 1024 and runs on a read-only filesystem.
 
-## Run on the dev host
+**API keys.** `OUTPOST_API_KEY_SHA256` is the SHA-256 (hex) of a bootstrap key named
+`default` (`KEY=$(openssl rand -hex 32); printf %s "$KEY" | sha256sum`). More keys, each with an
+optional channel count and channel rate, are made on the host and printed once:
 
 ```bash
-uv sync
-uv run pytest -q
-docker compose -f compose.dev.yml up -d --build
+docker exec outpost outpost-admin key add NAME [--max-channels N] [--channel-rate N]
+docker exec outpost outpost-admin key list
+docker exec outpost outpost-admin key revoke NAME [--delete-channels]
 ```
 
-`compose.dev.yml` publishes on one address only, `OUTPOST_DEV_BIND` (default `127.0.0.1`): name
-server `5353` (UDP and TCP), web `8080`, API `9080`, zone `oob.test`. It reads
-`OUTPOST_API_KEY_SHA256` and `OUTPOST_DEV_BIND` from a `.env` file next to it (ignored by git);
-the hash is the SHA-256 (hex) of the API key string:
+The server refuses to start when the bootstrap hash is unset and the store holds no active key.
 
-```bash
-KEY=$(openssl rand -hex 32); printf %s "$KEY" | sha256sum
-```
+**TLS.** `OUTPOST_TLS=acme` obtains a certificate for `<zone>` and `*.<zone>` from Let's
+Encrypt through DNS-01, answered by Outpost's own name server, and renews it; certbot runs
+inside the container and keeps its files under `/var/lib/outpost/certs`. Set
+`OUTPOST_ACME_STAGING=true` for a first try against the staging authority. `OUTPOST_ACME_EMAIL`
+is optional. `OUTPOST_TLS=files` uses a certificate pair you place under `/var/lib/outpost`
+(`OUTPOST_TLS_CERT`, `OUTPOST_TLS_KEY`, as `/data/...` paths). With TLS on, the certificate
+serves HTTPS on 443, the API and mail STARTTLS, and is reloaded when its files change. The API
+then serves only TLS, and starts once a certificate is loaded.
 
-Then:
-
-```bash
-uv run outpost channel create --api http://127.0.0.1:9080 --api-key "$KEY" --key-file channel.json
-uv run outpost list --key-file channel.json [--after N] [--wait S]
-uv run outpost read --key-file channel.json SEQ
-```
-
-The key file holds the API address, the channel id, the X25519 private key and the channel
-secret, and is written with mode 0600. Running `channel create` again with an existing key
-file registers the same key and secret again.
+**Mail.** `OUTPOST_SMTP=on` receives mail on 25 for any address at a channel's names, one
+record per recipient. It offers STARTTLS when TLS is on, refuses unknown recipients, never
+offers AUTH and never relays.
 
 ## Configuration
 
@@ -73,42 +104,42 @@ file registers the same key and secret again.
 | `OUTPOST_PUBLIC_IPV4` | required | the address `A` queries answer |
 | `OUTPOST_PUBLIC_IPV6` | none | the address `AAAA` queries answer |
 | `OUTPOST_BIND_IP` | `0.0.0.0` | address every listener binds |
-| `OUTPOST_API_KEY_SHA256` | required | SHA-256 (hex) of the operator's API key |
-| `OUTPOST_RETENTION_DAYS` | `90` | days a record is kept |
+| `OUTPOST_API_KEY_SHA256` | none | SHA-256 (hex) of the bootstrap API key `default` |
+| `OUTPOST_RETENTION_DAYS` | `90` | days a record is kept; a channel may ask for fewer |
 | `OUTPOST_STORE_MAX_BYTES` | `21474836480` | store size past which interactions are dropped |
-| `OUTPOST_TLS`, `OUTPOST_SMTP` | `off` | only `off` in this version |
-| `OUTPOST_DNS_PORT`, `OUTPOST_HTTP_PORT`, `OUTPOST_API_PORT` | `53`, `80`, `9443` | listener ports |
-| `OUTPOST_DATA_DIR` | `/var/lib/outpost` | directory of `outpost.sqlite3` |
+| `OUTPOST_SOURCE_RATE` | `60` | stored records a minute per source address and channel |
+| `OUTPOST_CHANNEL_RATE` | `600` | stored records a minute per channel |
+| `OUTPOST_CHANNEL_MAX_RECORDS` | `50000` | records a channel holds |
+| `OUTPOST_CHANNEL_MAX_BYTES` | `268435456` | bytes a channel holds |
+| `OUTPOST_TLS` | `off` | `off`, `acme` or `files` |
+| `OUTPOST_ACME_EMAIL` | none | account e-mail at the certificate authority |
+| `OUTPOST_ACME_STAGING` | `false` | use the staging authority |
+| `OUTPOST_TLS_CERT`, `OUTPOST_TLS_KEY` | none | certificate and key paths for `files` |
+| `OUTPOST_SMTP` | `off` | `on` runs the mail receiver |
+| `OUTPOST_DNS_PORT`, `OUTPOST_HTTP_PORT`, `OUTPOST_HTTPS_PORT`, `OUTPOST_SMTP_PORT`, `OUTPOST_API_PORT` | `53`, `80`, `443`, `25`, `9443` | listener ports |
+| `OUTPOST_DATA_DIR` | `/var/lib/outpost` | directory of `outpost.sqlite3` and the certificates |
 
 Logs carry counts and channel ids only.
 
-## API (version 1)
+## Develop
 
-The examples in `contract/v1/examples/` are the API's test vectors. FastAPI serves the
-OpenAPI document at `/openapi.json`. `test_only_keypair.json` opens `sealed_record.json` and is for tests only.
+```bash
+uv sync --all-extras
+uv run pytest -q
+docker compose -f compose.dev.yml up -d --build
+```
 
-Authentication is `Authorization: Bearer <value>`. Registration takes the API key and channel
-routes take the channel secret. Outpost compares the SHA-256 of the value as sent, in
-constant time.
+`compose.dev.yml` publishes on one address only, `OUTPOST_DEV_BIND` (default `127.0.0.1`): name
+server `5353` (UDP and TCP), web `8080`, mail `2525`, API `9080`, zone `oob.test`, no TLS. It
+reads `OUTPOST_API_KEY_SHA256` and `OUTPOST_DEV_BIND` from a `.env` file next to it (ignored by
+git). Then `OUTPOST_API_URL=http://127.0.0.1:9080 OUTPOST_API_KEY=$KEY uv run outpost channel create`.
 
-- `GET /v1/health` returns `{"status": "ok", "contract": 1, "store_full": false}` and needs no authentication.
-- `POST /v1/channels` takes `{"public_key": "<base64 32 bytes>", "secret_sha256": "<64 hex>"}`.
-  It returns `201` for a new channel and `200` with the same body on a repeat. The body is
-  `channel_id`, `zone`, `listeners`, `retention_days`.
-- `GET /v1/channels/{id}` returns the registration body plus `last_seq`, `held_records`,
-  `dropped_total`.
-- `GET /v1/channels/{id}/records?after=0&limit=100&wait=0` returns held records with
-  `seq > after`, ascending, as `{"records": [{"seq", "received_at", "sealed"}], "more",
-  "dropped_total"}`. The limit is at most 200 records and 4 MiB of sealed data, but a page
-  always holds at least one record when one exists. `wait` is at most 25 seconds.
+## API
 
-Errors have the shape `{"error": {"code", "message"}}`. The codes are `unauthorized` (401),
-`channel_not_found` (404), `channel_conflict` (409), `invalid_request` (422), `rate_limited`
-(429, with `Retry-After`) and `storage_unavailable` (503).
-
-`sealed` is a libsodium sealed box over the record JSON. A record is deleted
-`OUTPOST_RETENTION_DAYS` after it arrives. A channel is deleted when its last authenticated
-call and its newest record are both older than that.
+`docs/API.md` is the contract (version 1): addresses, listeners, limits, channels, the pull
+API, the record format and the reassembly convention. The examples in
+`contract/v1/examples/` are its test vectors; FastAPI serves the OpenAPI document at
+`/openapi.json`. `SECURITY.md` says what a host holds and what a compromise exposes.
 
 ## License
 

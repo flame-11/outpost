@@ -8,6 +8,7 @@ import dns.rcode
 import dns.rdatatype
 from conftest import PUBLIC_IPV4, ZONE, Stack, open_stack
 
+from outpost import schema
 from outpost.config import Limits
 
 
@@ -122,3 +123,31 @@ async def test_dns_source_rate_leaves_queries_unanswered(tmp_path: Path) -> None
         answers = [stack.responder.respond(wire, "198.51.100.9", 1, "udp") for _ in range(4)]
         assert [a is not None for a in answers] == [True, True, True, False]
         assert stack.responder.respond(wire, "198.51.100.10", 1, "udp") is not None
+
+
+async def test_acme_challenge_txt_answers_the_current_values(stack: Stack) -> None:
+    name = f"_acme-challenge.{ZONE}"
+    empty = ask(stack, name, "TXT")
+    assert (empty.rcode(), empty.answer) == (dns.rcode.NOERROR, [])
+    assert soa_in_authority(empty)
+
+    connection = schema.connect(stack.settings.data_dir)  # the hook writes from its own process
+    schema.add_challenge(connection, name, "value-one", "2026-11-11T00:00:00.000Z")
+    schema.add_challenge(connection, name, "value-two", "2026-11-11T00:00:01.000Z")
+    stack.challenges.set(await stack.db.challenge_values())
+    response = ask(stack, name.upper(), "TXT")
+    assert response.flags & dns.flags.AA
+    (rrset,) = response.answer
+    assert sorted(b"".join(rdata.strings) for rdata in rrset) == [b"value-one", b"value-two"]
+    assert rrset.ttl == 0
+    assert ask(stack, f"x.{name}", "TXT").answer == []  # only the name itself
+
+    schema.remove_challenge(connection, name, "value-one")
+    stack.challenges.set(await stack.db.challenge_values())
+    (rrset,) = ask(stack, name, "TXT").answer
+    assert [b"".join(rdata.strings) for rdata in rrset] == [b"value-two"]
+    schema.remove_challenge(connection, name, "value-two")
+    connection.close()
+    stack.challenges.set(await stack.db.challenge_values())
+    assert ask(stack, name, "TXT").answer == []
+    await stack.recorder.idle()

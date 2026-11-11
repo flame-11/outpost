@@ -1,0 +1,12 @@
+{
+  "name": "outpost",
+  "description": "Outpost callback addresses: MCP server and skill",
+  "owner": { "name": "Outpost" },
+  "plugins": [
+    {
+      "name": "outpost",
+      "source": "./outpost",
+      "description": "Callback addresses that record DNS lookups, web requests and mail, read on your machine"
+    }
+  ]
+}

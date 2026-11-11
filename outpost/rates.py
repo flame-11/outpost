@@ -14,8 +14,9 @@ class RateWindow:
         self._events: dict[Hashable, deque[float]] = {}
         self._next_sweep = 0.0
 
-    def allows(self, key: Hashable, now: float | None = None) -> bool:
-        return len(self._live(key, self._now(now))) < self._limit
+    def allows(self, key: Hashable, now: float | None = None, *, limit: int | None = None) -> bool:
+        """`limit` replaces the window's own for this key (a key's quota)."""
+        return len(self._live(key, self._now(now))) < (self._limit if limit is None else limit)
 
     def add(self, key: Hashable, now: float | None = None) -> None:
         moment = self._now(now)

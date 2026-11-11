@@ -1,0 +1,10 @@
+# Add to ~/.codex/config.toml. OUTPOST_API_URL and OUTPOST_API_KEY are forwarded from the
+# environment Codex starts in; set them there, or replace env_vars with an env table.
+[mcp_servers.outpost]
+command = "uvx"
+args = ["--from", "outpost-oob", "outpost", "mcp"]
+env_vars = ["OUTPOST_API_URL", "OUTPOST_API_KEY", "OUTPOST_HOME"]
+# outpost_list may wait up to 30 seconds for a record.
+tool_timeout_sec = 60
+# The tools only create channels and read records; without this, `codex exec` refuses every call.
+default_tools_approval_mode = "approve"

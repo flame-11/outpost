@@ -1,6 +1,8 @@
 """The web listener (CONTRACT section 2): reads raw bytes, answers a fixed empty 200, closes.
 
-No HTTP library parses the request: a malformed request is exactly what should be recorded.
+No HTTP library parses the request: a malformed request is exactly what should be recorded. The
+same listener serves HTTPS behind a TLS front context; there the pair comes from `Host`, else
+from the server name the client sent.
 """
 
 import asyncio
@@ -13,6 +15,7 @@ from outpost.addresses import address_from_text
 from outpost.config import Limits, Settings
 from outpost.recorder import Capture, Recorder
 from outpost.records import HttpRecord, format_time, utc_now
+from outpost.tls import server_name
 
 FIXED_ANSWER = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 _READ_CHUNK = 65_536
@@ -112,10 +115,11 @@ def host_without_port(host: str) -> str:
 
 
 class HttpListener:
-    def __init__(self, settings: Settings, limits: Limits, recorder: Recorder) -> None:
+    def __init__(self, settings: Settings, limits: Limits, recorder: Recorder, *, tls: bool = False) -> None:
         self._zone = settings.zone
         self._limits = limits
         self._recorder = recorder
+        self._tls = tls
 
     def handler(self) -> Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]:
         return self._handle
@@ -123,10 +127,11 @@ class HttpListener:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         local = writer.get_extra_info("sockname")
+        sni = server_name(writer.get_extra_info("ssl_object")) if self._tls else None
         try:
             data, truncated = await self._read(reader)
             if data:
-                self._capture(data, truncated, str(peer[0]), int(peer[1]), int(local[1]))
+                self._capture(data, truncated, str(peer[0]), int(peer[1]), int(local[1]), sni)
             with contextlib.suppress(ConnectionError):
                 writer.write(FIXED_ANSWER)
                 await writer.drain()
@@ -153,11 +158,13 @@ class HttpListener:
                         break
         return bytes(data), False
 
-    def _capture(self, data: bytes, truncated: bool, source_ip: str, source_port: int, port: int) -> None:
+    def _capture(
+        self, data: bytes, truncated: bool, source_ip: str, source_port: int, port: int, sni: str | None
+    ) -> None:
         head = read_head(data)
-        if head.host is None:
-            return
-        address = address_from_text(host_without_port(head.host), self._zone)
+        address = address_from_text(host_without_port(head.host), self._zone) if head.host is not None else None
+        if address is None and sni is not None:
+            address = address_from_text(sni, self._zone)
         if address is None or not self._recorder.knows(address.channel_id):
             return
         received_at = format_time(utc_now())
@@ -172,8 +179,8 @@ class HttpListener:
             source_port=source_port,
             received_at=received_at,
             port=port,
-            tls=False,
-            sni=None,
+            tls=self._tls,
+            sni=sni,
             method=head.method,
             target=head.target,
             host=head.host,

@@ -9,16 +9,18 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+# The `acme` extra brings certbot, which obtains and renews the certificate for OUTPOST_TLS=acme.
+RUN uv sync --frozen --no-dev --extra acme --no-install-project
 COPY outpost ./outpost
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra acme
 
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin outpost \
     && mkdir -p /data && chown outpost /data
 USER outpost
 
-ENV OUTPOST_DATA_DIR=/data
+ENV OUTPOST_DATA_DIR=/data \
+    PATH=/app/.venv/bin:$PATH
 VOLUME ["/data"]
-EXPOSE 53/udp 53/tcp 80/tcp 9443/tcp
+EXPOSE 53/udp 53/tcp 80/tcp 443/tcp 25/tcp 9443/tcp
 
 CMD ["/app/.venv/bin/python", "-m", "outpost.server"]

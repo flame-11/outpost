@@ -81,3 +81,37 @@ async def test_deleted_channel_registers_again_with_a_new_id(stack: Stack) -> No
     )
     assert response.status_code == 201
     assert response.json()["channel_id"] != channel.channel_id
+
+
+async def test_per_channel_retention(tmp_path: Path) -> None:
+    async with open_stack(tmp_path, retention_days=90) as stack:
+        short, default = await stack.register(retention_days=3), await stack.register()
+        for channel in (short, default):
+            stack.recorder.submit(aged(capture_for(channel, token="old"), 5))
+            stack.recorder.submit(capture_for(channel, token="new"))
+        await stack.recorder.idle()
+        result = await run_retention_once(stack.db, 90)
+        assert (result.records_deleted, result.channels_deleted) == (1, ())
+        assert [short.open(r["sealed"]).token for r in (await stack.records(short))["records"]] == ["new"]
+        assert len((await stack.records(default))["records"]) == 2
+
+
+async def test_per_channel_retention_deletes_the_channel_after_its_own_days(tmp_path: Path) -> None:
+    async with open_stack(tmp_path, retention_days=90) as stack:
+        short, default = await stack.register(retention_days=3), await stack.register()
+        result = await run_retention_once(stack.db, 90, now=utc_now() + timedelta(days=4))
+        assert result.channels_deleted == (short.channel_id,)
+        response = await stack.client.get(f"/v1/channels/{short.channel_id}", headers=short.auth)
+        assert response.status_code == 404
+        assert (await stack.client.get(f"/v1/channels/{default.channel_id}", headers=default.auth)).status_code == 200
+
+
+async def test_a_lowered_instance_retention_caps_a_channel_retention(tmp_path: Path) -> None:
+    async with open_stack(tmp_path, retention_days=90) as stack:
+        channel = await stack.register(retention_days=60)
+        stack.recorder.submit(aged(capture_for(channel), 20))
+        await stack.recorder.idle()
+    async with open_stack(tmp_path, retention_days=10) as stack:
+        status = await stack.client.get(f"/v1/channels/{channel.channel_id}", headers=channel.auth)
+        assert status.json()["retention_days"] == 10
+        assert (await run_retention_once(stack.db, 10)).records_deleted == 1

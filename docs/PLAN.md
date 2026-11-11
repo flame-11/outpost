@@ -1,6 +1,7 @@
 # Outpost 1.0 plan
 
-Status: plan for review. Outpost today runs the authoritative name server (UDP and TCP), the
+Status: built in 1.0. `README.md` and `docs/API.md` describe what was built; this file is the
+plan as reviewed. Before it, Outpost ran the authoritative name server (UDP and TCP), the
 plain web listener, sealed storage, the pull API v1, limits, retention and the `outpost` CLI.
 This plan takes it to a 1.0 that a person or an agent can use directly, without any other
 product in between.
@@ -33,7 +34,7 @@ Claude Code and Codex; multi-lookup data comes back whole.
   `<data>[.<data>…].<index>.<token>-<channel>.<zone>`. `assemble(token, encoding)` collects the
   token's records, keeps one record per index (resolvers retry), orders them, decodes them, and
   returns the bytes plus the list of missing indices. Data in a web request's path, query or
-  body needs no reassembly; `read` decodes it on request.
+  body needs no reassembly.
 - Configurable limits: `OUTPOST_SOURCE_RATE`, `OUTPOST_CHANNEL_RATE`,
   `OUTPOST_CHANNEL_MAX_RECORDS`, `OUTPOST_CHANNEL_MAX_BYTES` (today constants). The channel
   answer reports `source_rate` and `channel_rate` so a client knows what one source may send.

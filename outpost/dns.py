@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 import dns.flags
 import dns.message
@@ -13,25 +14,47 @@ import dns.rcode
 import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
+from dns.rdtypes.ANY.TXT import TXT
 
 from outpost.addresses import address_from_dns
 from outpost.config import Limits, Settings
 from outpost.rates import RateWindow
 from outpost.recorder import Capture, Recorder
 from outpost.records import DnsRecord, format_time, utc_now
+from outpost.schema import challenge_name
 
 log = logging.getLogger("outpost.dns")
 
 TTL = 60
+CHALLENGE_TTL = 0  # a validator must never see an earlier value
 TCP_IDLE_SECONDS = 10.0
+CHALLENGE_POLL_SECONDS = 1.0
+
+
+class ChallengeValues:
+    """The `_acme-challenge` TXT values, as the ACME hook last wrote them to the store (in memory,
+    so an answer never waits on the disk)."""
+
+    def __init__(self) -> None:
+        self._values: dict[str, tuple[str, ...]] = {}
+
+    def set(self, values: dict[str, tuple[str, ...]]) -> None:
+        self._values = values
+
+    def at(self, name: str) -> tuple[str, ...]:
+        return self._values.get(name, ())
 
 
 class DnsResponder:
     """Builds the answer for one query and hands an interaction that names a channel to the
     recorder. Returns None when the query is not answered."""
 
-    def __init__(self, settings: Settings, limits: Limits, recorder: Recorder) -> None:
+    def __init__(
+        self, settings: Settings, limits: Limits, recorder: Recorder, challenges: ChallengeValues | None = None
+    ) -> None:
         self._zone = dns.name.from_text(settings.zone)
+        self._challenges = challenges or ChallengeValues()
+        self._challenge_name = dns.name.from_text(challenge_name(settings.zone))
         self._ipv4 = settings.public_ipv4
         self._ipv6 = settings.public_ipv6
         self._recorder = recorder
@@ -79,8 +102,11 @@ class DnsResponder:
             rrset = dns.rrset.from_text(qname, TTL, "IN", "NS", *self._ns_texts)
         elif rdtype == dns.rdatatype.SOA and at_apex:
             rrset = dns.rrset.from_text(qname, TTL, "IN", "SOA", self._soa_text)
-        # TXT at _acme-challenge.<zone> carries the certificate challenge values; this version
-        # has no certificate component, so there are none and it answers like any other type.
+        elif rdtype == dns.rdatatype.TXT and qname == self._challenge_name:
+            values = self._challenges.at(qname.to_text(omit_final_dot=True).lower())
+            if values:
+                rdatas = [TXT(dns.rdataclass.IN, dns.rdatatype.TXT, [value.encode()]) for value in values]
+                rrset = dns.rrset.from_rdata_list(qname, CHALLENGE_TTL, rdatas)
         if rrset is not None:
             response.answer.append(rrset)
         else:
@@ -113,6 +139,17 @@ class DnsResponder:
                 plaintext=record.model_dump_json().encode(),
             )
         )
+
+
+async def challenge_loop(db: "ChallengeSource", challenges: ChallengeValues) -> None:
+    """Keep `challenges` equal to the store's values; the hook runs in another process."""
+    while True:
+        challenges.set(await db.challenge_values())
+        await asyncio.sleep(CHALLENGE_POLL_SECONDS)
+
+
+class ChallengeSource(Protocol):
+    async def challenge_values(self) -> dict[str, tuple[str, ...]]: ...
 
 
 class DnsUdpProtocol(asyncio.DatagramProtocol):

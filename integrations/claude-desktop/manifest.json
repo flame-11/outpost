@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "outpost",
+  "display_name": "Outpost",
+  "version": "1.0.0",
+  "description": "Callback addresses that record DNS lookups, web requests and mail, read on your machine",
+  "author": { "name": "Outpost" },
+  "license": "MIT",
+  "server": {
+    "type": "binary",
+    "entry_point": "uvx",
+    "mcp_config": {
+      "command": "uvx",
+      "args": ["--from", "outpost-oob", "outpost", "mcp"],
+      "env": {
+        "OUTPOST_API_URL": "${user_config.api_url}",
+        "OUTPOST_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "outpost_addresses", "description": "Get the channel's callback addresses, creating the channel on first use" },
+    { "name": "outpost_list", "description": "List the records that reached the addresses" },
+    { "name": "outpost_read", "description": "Read one record in full" },
+    { "name": "outpost_assemble", "description": "Reassemble data sent as many lookups of one token" }
+  ],
+  "user_config": {
+    "api_url": {
+      "type": "string",
+      "title": "Outpost API address",
+      "description": "Base address of your Outpost instance's API, for example http://127.0.0.1:9080",
+      "required": true
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Outpost API key",
+      "description": "The instance's API key, used to create channels",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}

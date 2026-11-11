@@ -1,25 +1,34 @@
 [project]
-name = "outpost"
-version = "0.1.0"
-description = "A public callback catcher: authoritative name server and web listener for one zone, with sealed records and a pull API."
+name = "outpost-oob"
+version = "1.0.0"
+description = "A public callback catcher: name server, web and mail listeners for one zone, with sealed records, a pull API and an MCP server."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
+    "aiosmtpd>=1.4.6",
     "dnspython>=2.6",
     "fastapi>=0.115",
     "httpx>=0.27",
+    "mcp>=2.3,<3",
     "pydantic>=2.8",
     "pynacl>=1.5",
-    "uvicorn>=0.30",
+    "uvicorn>=0.54",
 ]
 
 [project.scripts]
 outpost = "outpost.cli:main"
+outpost-admin = "outpost.admin:main"
+
+[project.optional-dependencies]
+acme = [
+    "certbot>=5.10.0",
+]
 
 [dependency-groups]
 dev = [
+    "cryptography>=50.0.2",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
