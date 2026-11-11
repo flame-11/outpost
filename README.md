@@ -21,6 +21,21 @@ read from the label immediately left of the zone. A web request's pair comes fro
 header. An interaction is stored only when its pair names an existing channel. Every other
 interaction gets the same answer and is not stored.
 
+## Run on a public host
+
+1. Delegate a zone to the host. For a subdomain of a domain you control, add to that domain:
+   `A ns1.<zone> → <host address>` and `NS <zone> → ns1.<zone>`. For a whole domain, set glue
+   records and name servers at the registrar.
+2. Open 53/udp, 53/tcp and 80/tcp to everyone. Open the API port only to the addresses your
+   clients call from, or keep it private and reach it through a tunnel.
+3. Next to `compose.yml`, write a `.env` with `OUTPOST_ZONE`, `OUTPOST_PUBLIC_IPV4` (the
+   address the zone's names should resolve to), `OUTPOST_BIND_IP` (the host's own interface
+   address), `OUTPOST_API_KEY_SHA256` and, if wanted, `OUTPOST_API_PORT`.
+4. `sudo install -d -m 700 /var/lib/outpost && sudo docker compose up -d --build`
+
+`compose.yml` uses host networking, so records carry the real source addresses. The container
+keeps only the capability to bind ports below 1024 and runs on a read-only filesystem.
+
 ## Run on the dev host
 
 ```bash
@@ -29,9 +44,10 @@ uv run pytest -q
 docker compose -f compose.dev.yml up -d --build
 ```
 
-`compose.dev.yml` publishes on `172.17.0.1` only: name server `5353` (UDP and TCP), web
-`8080`, API `9080`, zone `oob.test`. `compose.dev.yml` reads `OUTPOST_API_KEY_SHA256` from a
-`.env` file next to it (ignored by git): the SHA-256 (hex) of the API key string:
+`compose.dev.yml` publishes on one address only, `OUTPOST_DEV_BIND` (default `127.0.0.1`): name
+server `5353` (UDP and TCP), web `8080`, API `9080`, zone `oob.test`. It reads
+`OUTPOST_API_KEY_SHA256` and `OUTPOST_DEV_BIND` from a `.env` file next to it (ignored by git);
+the hash is the SHA-256 (hex) of the API key string:
 
 ```bash
 KEY=$(openssl rand -hex 32); printf %s "$KEY" | sha256sum
@@ -40,7 +56,7 @@ KEY=$(openssl rand -hex 32); printf %s "$KEY" | sha256sum
 Then:
 
 ```bash
-uv run outpost channel create --api http://172.17.0.1:9080 --api-key "$KEY" --key-file channel.json
+uv run outpost channel create --api http://127.0.0.1:9080 --api-key "$KEY" --key-file channel.json
 uv run outpost list --key-file channel.json [--after N] [--wait S]
 uv run outpost read --key-file channel.json SEQ
 ```

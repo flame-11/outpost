@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     channel = commands.add_parser("channel", help="channel commands")
     channel_commands = channel.add_subparsers(dest="channel_command", required=True)
     create = channel_commands.add_parser("create", help="register a channel, keeping its keys in a key file")
-    create.add_argument("--api", required=True, help="API base address, e.g. http://172.17.0.1:9080")
+    create.add_argument("--api", required=True, help="API base address, e.g. http://127.0.0.1:9080")
     create.add_argument("--api-key", required=True, help="the operator's API key")
     create.add_argument("--key-file", required=True)
     create.set_defaults(handler=_cmd_create)

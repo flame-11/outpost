@@ -1,0 +1,35 @@
+# Public host. Host networking so records carry real source addresses and the name server answers on
+# the host's own address. Values come from a `.env` file next to this one (ignored by git):
+#   OUTPOST_ZONE, OUTPOST_PUBLIC_IPV4, OUTPOST_BIND_IP, OUTPOST_API_KEY_SHA256, optional OUTPOST_PUBLIC_IPV6.
+# OUTPOST_BIND_IP is the host's own interface address; the provider's firewall opens 53/udp, 53/tcp and 80/tcp
+# to everyone and the API port only to client addresses.
+name: outpost
+
+services:
+  outpost:
+    build: .
+    image: outpost:latest
+    container_name: outpost
+    restart: unless-stopped
+    network_mode: host
+    # Root inside the container only to bind ports 53 and 80 on the host network; every other capability dropped.
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      OUTPOST_ZONE: ${OUTPOST_ZONE:?}
+      OUTPOST_PUBLIC_IPV4: ${OUTPOST_PUBLIC_IPV4:?}
+      OUTPOST_PUBLIC_IPV6: ${OUTPOST_PUBLIC_IPV6:-}
+      OUTPOST_BIND_IP: ${OUTPOST_BIND_IP:?}
+      OUTPOST_API_KEY_SHA256: ${OUTPOST_API_KEY_SHA256:?}
+      OUTPOST_RETENTION_DAYS: ${OUTPOST_RETENTION_DAYS:-90}
+      OUTPOST_TLS: "off"
+      OUTPOST_SMTP: "off"
+      OUTPOST_DNS_PORT: "53"
+      OUTPOST_HTTP_PORT: "80"
+      OUTPOST_API_PORT: ${OUTPOST_API_PORT:-9443}
+      OUTPOST_DATA_DIR: /data
+    volumes:
+      - /var/lib/outpost:/data
