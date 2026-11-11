@@ -1,0 +1,32 @@
+# Dev host only: no TLS, published on the Docker bridge gateway 172.17.0.1 and nowhere else.
+name: outpost-dev
+
+services:
+  outpost:
+    build: .
+    image: outpost:dev
+    container_name: outpost_dev
+    restart: unless-stopped
+    environment:
+      OUTPOST_ZONE: oob.test
+      OUTPOST_PUBLIC_IPV4: 172.17.0.1
+      OUTPOST_BIND_IP: 0.0.0.0
+      # SHA-256 (hex) of the dev API key string, as sent in `Authorization: Bearer <key>`.
+      OUTPOST_API_KEY_SHA256: ${OUTPOST_API_KEY_SHA256:?set it in .env next to this file}
+      OUTPOST_RETENTION_DAYS: "90"
+      OUTPOST_TLS: "off"
+      OUTPOST_SMTP: "off"
+      OUTPOST_DNS_PORT: "53"
+      OUTPOST_HTTP_PORT: "80"
+      OUTPOST_API_PORT: "9080"
+      OUTPOST_DATA_DIR: /data
+    ports:
+      - "172.17.0.1:5353:53/udp"
+      - "172.17.0.1:5353:53/tcp"
+      - "172.17.0.1:8080:80/tcp"
+      - "172.17.0.1:9080:9080/tcp"
+    volumes:
+      - outpost_data:/data
+
+volumes:
+  outpost_data:

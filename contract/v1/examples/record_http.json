@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "protocol": "http",
+  "channel_id": "k3v7x2mq6c4a",
+  "token": "q7ab12cd9z",
+  "prefix": "",
+  "name": "q7ab12cd9z-k3v7x2mq6c4a.oob.example",
+  "source_ip": "203.0.113.7",
+  "source_port": 51234,
+  "received_at": "2026-11-11T08:15:30.123Z",
+  "port": 80,
+  "tls": false,
+  "sni": null,
+  "method": "GET",
+  "target": "/c",
+  "host": "q7ab12cd9z-k3v7x2mq6c4a.oob.example",
+  "raw_b64": "R0VUIC9jIEhUVFAvMS4xDQpIb3N0OiAuLi4NCg0K",
+  "truncated": false
+}

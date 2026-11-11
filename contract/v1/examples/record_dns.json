@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "protocol": "dns",
+  "channel_id": "k3v7x2mq6c4a",
+  "token": "t1",
+  "prefix": "uid0",
+  "name": "uid0.t1-k3v7x2mq6c4a.oob.example",
+  "source_ip": "198.51.100.53",
+  "source_port": 40213,
+  "received_at": "2026-11-11T08:15:29.871Z",
+  "qname": "uid0.T1-k3v7x2mq6c4a.oob.example",
+  "qtype": "A",
+  "transport": "udp"
+}

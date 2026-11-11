@@ -1,0 +1,6 @@
+{
+  "channel_id": "k3v7x2mq6c4a",
+  "zone": "oob.example",
+  "listeners": ["dns", "http", "https", "smtp"],
+  "retention_days": 90
+}

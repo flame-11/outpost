@@ -1,0 +1,8 @@
+{
+  "401": {"error": {"code": "unauthorized", "message": "missing or wrong bearer value"}},
+  "404": {"error": {"code": "channel_not_found", "message": "no channel k3v7x2mq6c4a"}},
+  "409": {"error": {"code": "channel_conflict", "message": "this public_key is registered with another secret"}},
+  "422": {"error": {"code": "invalid_request", "message": "secret_sha256: String should match pattern '^[0-9a-fA-F]{64}$'"}},
+  "429": {"error": {"code": "rate_limited", "message": "too many failed authentications"}},
+  "503": {"error": {"code": "storage_unavailable", "message": "the store could not be read or written"}}
+}

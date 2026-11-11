@@ -1,0 +1,6 @@
+{
+  "warning": "TEST ONLY. Published so every client can check that sealed_record.json opens to record_http.json. Never use this key pair or secret for a real channel.",
+  "public_key": "UXoU2aVpzO7Wpq8YV4ussozMjyMCpWsxsDkH+S2nrW8=",
+  "private_key": "2HQ9fFW6ik9a4eT0jZeUxM7yY1UBv3nncTvN9A1Pu/U=",
+  "channel_secret": "3f92455d5ef2cd4d38ce0cf982580f165b1f7068bcacb681aeca083211fd9c92"
+}
