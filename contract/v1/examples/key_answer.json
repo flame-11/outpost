@@ -1,0 +1,9 @@
+{
+  "name": "default",
+  "zone": "oob.example",
+  "listeners": ["dns", "http", "https", "smtp"],
+  "responses": true,
+  "max_channels": null,
+  "channels": 3,
+  "channel_rate": 600
+}

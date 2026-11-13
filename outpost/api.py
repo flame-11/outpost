@@ -25,6 +25,7 @@ from outpost.models import (
     ErrorCode,
     ErrorDetail,
     HealthAnswer,
+    KeyAnswer,
     RecordsPage,
     RegistrationAnswer,
     RegistrationRequest,
@@ -157,6 +158,18 @@ def create_app(ctx: ApiContext) -> FastAPI:
     @app.get("/v1/health")
     async def health() -> HealthAnswer:
         return HealthAnswer(status="ok", contract=1, store_full=await db.store_full())
+
+    @app.get("/v1/key")
+    async def key_answer(key: Annotated[ApiKey, Depends(api_key)]) -> KeyAnswer:
+        return KeyAnswer(
+            name=key.name,
+            zone=settings.zone,
+            listeners=list(settings.listeners),
+            responses=settings.responses,
+            max_channels=key.max_channels,
+            channels=await db.key_channel_count(key.name),
+            channel_rate=limits.channel_rate_for(key.channel_rate),
+        )
 
     @app.post(
         "/v1/channels",

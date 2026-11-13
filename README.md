@@ -108,6 +108,9 @@ response lasts at most a day and is stored unsealed, since it is public. With it
 web request gets the empty `200`. Hosting chosen content on a zone with a valid certificate
 invites abuse reports, so give API keys only to people you trust with that.
 
+**Key check.** `GET /v1/key` with an API key answers its name, its channel quota and how many
+channels it holds, without creating anything (`docs/API.md` section 10).
+
 **Mail.** `OUTPOST_SMTP=on` receives mail on 25 for any address at a channel's names, one
 record per recipient. It offers STARTTLS when TLS is on, refuses unknown recipients, never
 offers AUTH and never relays.

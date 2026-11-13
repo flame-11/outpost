@@ -132,6 +132,10 @@ class Store:
     def api_key(self, key_sha256: str) -> ApiKey | None:
         return keys.key_by_sha256(self._conn, key_sha256)
 
+    def key_channel_count(self, key_name: str) -> int:
+        (held,) = self._conn.execute("SELECT COUNT(*) FROM channels WHERE key_name = ?", (key_name,)).fetchone()
+        return held
+
     def has_active_keys(self) -> bool:
         return keys.has_active_keys(self._conn)
 
@@ -455,6 +459,9 @@ class Database:
 
     async def api_key(self, key_sha256: str) -> ApiKey | None:
         return await self._run(partial(self._store.api_key, key_sha256))
+
+    async def key_channel_count(self, key_name: str) -> int:
+        return await self._run(partial(self._store.key_channel_count, key_name))
 
     async def has_active_keys(self) -> bool:
         return await self._run(self._store.has_active_keys)

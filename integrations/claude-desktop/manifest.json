@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "outpost",
   "display_name": "Outpost",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Callback addresses that record DNS lookups, web requests and mail, read on your machine",
   "author": { "name": "Outpost" },
   "license": "MIT",

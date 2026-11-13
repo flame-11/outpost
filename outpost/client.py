@@ -81,6 +81,18 @@ class Registration(Answer):
     responses: bool = False  # absent before Outpost 1.1
 
 
+class KeyInfo(Answer):
+    """What the operator's API key allows (CONTRACT section 10)."""
+
+    name: str
+    zone: str
+    listeners: list[str]
+    responses: bool
+    max_channels: Count | None
+    channels: Count
+    channel_rate: Count
+
+
 class ChannelState(Registration):
     last_seq: Count
     held_records: Count
@@ -206,6 +218,12 @@ async def register(
     key_file = key_file.model_copy(update={"channel_id": answer.channel_id, "zone": answer.zone})
     save_key_file(path, key_file)
     return key_file, answer
+
+
+async def key_info(http: httpx.AsyncClient, api: str, api_key: str) -> KeyInfo:
+    """Check the API key at `api` without registering anything."""
+    response = await _call(http, "GET", f"{api.rstrip('/')}/v1/key", api_key)
+    return _parse(KeyInfo, response)
 
 
 async def channel_state(http: httpx.AsyncClient, key_file: KeyFile) -> ChannelState:

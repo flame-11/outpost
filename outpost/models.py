@@ -63,6 +63,16 @@ class RegistrationAnswer(StrictModel):
     responses: bool  # the instance serves the responses channels set (section 9)
 
 
+class KeyAnswer(StrictModel):
+    name: str
+    zone: str
+    listeners: list[Listener]
+    responses: bool
+    max_channels: Count | None  # the key's channel quota; None: unlimited
+    channels: Count  # channels the key registered that the store still holds
+    channel_rate: Rate  # stored records a minute, for a new channel of this key
+
+
 class ChannelAnswer(StrictModel):
     channel_id: ChannelId
     zone: str

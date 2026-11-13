@@ -148,6 +148,10 @@ Errors: a 4xx or 5xx status with `{"error": {"code": "<code>", "message": "<text
 
 No authentication. `200 {"status": "ok", "contract": 1, "store_full": false}`.
 
+### `GET /v1/key`
+
+Bearer: the API key. Checks the key without creating anything (section 10).
+
 ### `POST /v1/channels`
 
 Bearer: the API key.
@@ -473,3 +477,36 @@ A response, with its token, path, headers and body, is stored as sent, not seale
 served to anyone who asks for it. It is deleted at `expires_at` (by the next retention
 pass at the latest), when it is replaced, or with its channel. Logs carry the channel id,
 response id, body size and body SHA-256, never the body.
+
+## 10. Key check (Outpost 1.2)
+
+A client can ask whether its API key works, and what the key allows, without registering a
+channel. Additive to version 1.
+
+### `GET /v1/key`
+
+Bearer: the API key, the same values and the same failed-authentication rate limit as
+`POST /v1/channels`. The call creates, changes and touches nothing.
+
+```json
+{
+  "name": "default",
+  "zone": "oob.example",
+  "listeners": ["dns", "http", "https", "smtp"],
+  "responses": true,
+  "max_channels": null,
+  "channels": 3,
+  "channel_rate": 600
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | the key's name; `default` for the key in `OUTPOST_API_KEY_SHA256` |
+| `zone`, `listeners`, `responses` | the instance's, as in the registration answer |
+| `max_channels` | the key's channel quota; null when unlimited |
+| `channels` | channels this key registered and the store still holds |
+| `channel_rate` | the records a minute a new channel of this key gets (section 7) |
+
+Errors: `401 unauthorized` for a missing, wrong or revoked key, `429 rate_limited`,
+`503 storage_unavailable`.
